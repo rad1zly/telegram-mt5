@@ -1,0 +1,8 @@
+telethon>=1.36
+pyyaml>=6.0
+python-dotenv>=1.0
+anthropic>=0.40
+pytest>=8.0
+
+# Windows-only — jalankan mini PC:
+# pip install MetaTrader5
