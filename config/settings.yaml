@@ -1,51 +1,77 @@
-# Fase saat ini: 1 (listen-only recorder). Trading belum aktif.
-
-mode: demo  # demo | live
-
+mode: demo
 telegram:
-  channel: ""  # isi username channel (mis. "@nama_channel") atau ID numerik
-  session_name: "session/user"
-
+  channel: '-1004346298355'
+  session_name: session/user
 risk:
   usd_per_trade: 50.0
   max_lot_cap: 5.0
   max_trades_per_day: 20
   daily_loss_cap_usd: 200.0
-
 guards:
   max_price_deviation_pips: 15
   max_spread_pips: 30
-
 followup:
   move_sl_to_be: true
   partial_close_tp1: true
   partial_close_percent: 50
-  close_all: false  # sengaja off — lihat plan, hanya notifikasi
-
+  close_all: false
 symbols:
-  # Lapis 1: alias -> daftar sebutan yang mungkin dipakai channel.
-  # Dinormalisasi saat dibandingkan (uppercase, buang karakter non-alfanumerik),
-  # jadi "XAU/USD", "xauusd", "XAUUSD" semua cocok tanpa perlu ditulis semua.
   aliases:
-    XAUUSD: ["GOLD", "XAUUSD", "XAU/USD", "GOLDUSD"]
-    XAGUSD: ["SILVER", "XAGUSD", "XAG/USD"]
-    NAS100: ["NAS100", "USTEC", "US100", "NASDAQ", "NASDAQ100"]
-    SP500: ["SP500", "US500", "SPX500", "SPX"]
-    US30: ["US30", "DOW", "DOWJONES", "WALLSTREET", "WS30"]
-    GER40: ["GER40", "DAX", "DE40", "GERMANY40"]
-    EURUSD: ["EURUSD", "EUR/USD"]
-    GBPUSD: ["GBPUSD", "GBP/USD"]
-    USDJPY: ["USDJPY", "USD/JPY"]
-    BTCUSD: ["BTCUSD", "BITCOIN", "BTC/USD"]
-    # tambahkan instrumen lain yang muncul di channel kamu di sini
-
-  # Lapis 2: kanonik -> nama PERSIS di broker kamu. WAJIB diisi lewat
-  # tools/map_symbols.py (Fase 3, dijalankan di mini PC dengan MT5 login)
-  # sebelum trading live diaktifkan. Jangan diisi manual dengan tebakan —
-  # kalau broker punya beberapa varian (XAUUSD vs XAUUSD.raw) salah pilih
-  # berarti order jalan di instrumen/akun yang salah tanpa ketahuan.
-  broker_overrides: {}
-
+    XAUUSD:
+    - GOLD
+    - XAUUSD
+    - XAU/USD
+    - GOLDUSD
+    XAGUSD:
+    - SILVER
+    - XAGUSD
+    - XAG/USD
+    NAS100:
+    - NAS100
+    - USTEC
+    - US100
+    - NASDAQ
+    - NASDAQ100
+    SP500:
+    - SP500
+    - US500
+    - SPX500
+    - SPX
+    US30:
+    - US30
+    - DOW
+    - DOWJONES
+    - WALLSTREET
+    - WS30
+    GER40:
+    - GER40
+    - DAX
+    - DE40
+    - GERMANY40
+    EURUSD:
+    - EURUSD
+    - EUR/USD
+    GBPUSD:
+    - GBPUSD
+    - GBP/USD
+    USDJPY:
+    - USDJPY
+    - USD/JPY
+    BTCUSD:
+    - BTCUSD
+    - BITCOIN
+    - BTC/USD
+  broker_overrides:
+    XAUUSD: XAUUSD+
+    XAGUSD: XAGUSD
+    NAS100: NAS100.r
+    SP500: SP500.r
+    GER40: GER40.r
+    EURUSD: EURUSD+
+    GBPUSD: GBPUSD+
+    USDJPY: USDJPY+
+    BTCUSD: BTCUSD
+    US30: DJ30.r
 notifier:
   bot_token_env: TELEGRAM_BOT_TOKEN
   chat_id_env: TELEGRAM_CHAT_ID
