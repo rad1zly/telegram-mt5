@@ -14,7 +14,12 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from datetime import datetime, timezone
+
+# Supaya "src" bisa diimpor walau script ini dijalankan langsung
+# (python tools\collect_signals.py) dari luar folder project.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import yaml
 from dotenv import load_dotenv

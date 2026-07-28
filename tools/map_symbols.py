@@ -15,11 +15,14 @@ tanpa ketahuan. Sekali dikonfirmasi, mapping ini permanen sampai kamu
 ubah manual atau ganti broker.
 """
 
+import os
 import sys
 
 import yaml
 
-sys.path.insert(0, ".")
+# Supaya "src" bisa diimpor walau script ini dijalankan langsung
+# (python tools\map_symbols.py) dari luar folder project.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.trading.symbols import SymbolResolver  # noqa: E402
 
 SETTINGS_PATH = "config/settings.yaml"
