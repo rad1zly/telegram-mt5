@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 import yaml
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
+from telethon.tl.types import PeerChannel
 
 from src.store.db import Database
 
@@ -41,6 +42,25 @@ def append_fixture(row: dict, path: str = FIXTURE_PATH) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a") as f:
         f.write(json.dumps(row, default=str) + "\n")
+
+
+def as_channel_ref(channel):
+    """Terima username ('@nama'), ID polos, atau ID bertanda '-100...'
+    (format yang biasa muncul dari bot semacam @getidsbot atau Telegram
+    Web) dan kembalikan bentuk yang bisa diresolve Telethon. Channel
+    private HANYA bisa diresolve kalau akun ini sudah pernah 'melihat'
+    entity-nya — makanya main() memanggil client.get_dialogs() dulu
+    sebelum resolve ini, supaya cache access_hash terisi."""
+    if isinstance(channel, str) and not channel.lstrip("-").isdigit():
+        return channel  # username, mis. "@nama_channel"
+
+    raw_id = int(channel)
+    if raw_id < 0:
+        s = str(raw_id)
+        if s.startswith("-100"):
+            return PeerChannel(int(s[4:]))
+        return raw_id
+    return PeerChannel(raw_id)
 
 
 async def main():
@@ -68,8 +88,23 @@ async def main():
     db.init_schema()
 
     client = TelegramClient(session_path, int(api_id), api_hash)
+    await client.start()
 
-    @client.on(events.NewMessage(chats=channel))
+    log.info("Menyinkronkan daftar chat (perlu supaya channel private bisa dikenali)...")
+    await client.get_dialogs()
+
+    try:
+        entity = await client.get_entity(as_channel_ref(channel))
+    except (ValueError, TypeError) as e:
+        raise SystemExit(
+            f"Tidak bisa menemukan channel '{channel}'. Pastikan: (1) akun ini "
+            f"sudah jadi member channel tsb, (2) ID/username di config/settings.yaml "
+            f"sudah benar. Detail error: {e}"
+        )
+
+    log.info("Channel ditemukan: %s (id=%s)", getattr(entity, "title", channel), entity.id)
+
+    @client.on(events.NewMessage(chats=entity))
     async def handler(event):
         msg = event.message
         text = msg.raw_text or ""
@@ -90,7 +125,7 @@ async def main():
         else:
             log.debug("Pesan duplikat #%s diabaikan", msg.id)
 
-    @client.on(events.MessageEdited(chats=channel))
+    @client.on(events.MessageEdited(chats=entity))
     async def edit_handler(event):
         # Banyak channel signal meng-edit pesan asli untuk update
         # ("TP1 hit", "SL to BE") alih-alih kirim pesan baru — ini penting
@@ -111,7 +146,6 @@ async def main():
 
     log.info("Mendengarkan channel: %s", channel)
     log.info("Total pesan tercatat sejauh ini: %d", db.count_messages())
-    await client.start()
     await client.run_until_disconnected()
 
 

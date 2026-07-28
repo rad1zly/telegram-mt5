@@ -41,6 +41,11 @@ async def main():
     me = await client.get_me()
     print(f"Login berhasil sebagai {me.first_name} (@{me.username}).")
     print(f"Session tersimpan di {session_path}.session — jangan commit/share file ini.")
+
+    print("Menyinkronkan daftar chat (supaya channel private bisa dikenali nanti)...")
+    dialogs = await client.get_dialogs()
+    print(f"Tersinkron {len(dialogs)} chat/channel/grup.")
+
     await client.disconnect()
 
 
