@@ -114,12 +114,40 @@ def test_signal_entry_range_parsed_when_both_bounds_present():
     assert signal.entry is None
 
 
-def test_followup_extracted_with_kind():
-    client = FakeClient(response=_response_with_args({"kind": "move_sl_be"}))
+def test_followup_extracted_with_single_kind():
+    client = FakeClient(response=_response_with_args({"kinds": ["move_sl_be"], "symbol": "GOLD"}))
     followup = parse_followup_with_llm("amankan posisi ke breakeven ya", message_id=6, reply_to_msg_id=1, client=client)
     assert followup is not None
-    assert followup.kind == "move_sl_be"
+    assert followup.kinds == ["move_sl_be"]
     assert followup.reply_to_msg_id == 1
+    assert followup.symbol == "GOLD"
+
+
+def test_followup_extracted_with_multiple_kinds():
+    # kasus nyata: "close partially AND move SL to entry" dalam satu pesan
+    client = FakeClient(response=_response_with_args({"kinds": ["partial_close_tp1", "move_sl_be"]}))
+    followup = parse_followup_with_llm(
+        "You may close partially to secure gains and move the stop-loss to the entry.",
+        message_id=7,
+        reply_to_msg_id=None,
+        client=client,
+    )
+    assert followup is not None
+    assert set(followup.kinds) == {"partial_close_tp1", "move_sl_be"}
+
+
+def test_followup_recognized_but_no_actionable_kind_is_info_only():
+    # model memanggil tool (yakin ini follow-up) tapi kinds kosong -> info-only,
+    # BEDA dari model tidak memanggil tool sama sekali (return None)
+    client = FakeClient(response=_response_with_args({"kinds": []}))
+    followup = parse_followup_with_llm(
+        "close fully position or Close partially and place your sl around 4349",
+        message_id=8,
+        reply_to_msg_id=None,
+        client=client,
+    )
+    assert followup is not None
+    assert followup.kinds == []
 
 
 def test_followup_rejected_when_no_tool_call():

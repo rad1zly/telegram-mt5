@@ -7,3 +7,6 @@ logs/*.log
 .venv/
 venv/
 .pytest_cache/
+
+# Data mentah dari channel signal (berbayar/private) — jangan pernah publik
+tests/fixtures/*.jsonl

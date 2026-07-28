@@ -60,18 +60,34 @@ FOLLOWUP_TOOL = {
         "name": "extract_followup",
         "description": (
             "Klasifikasikan pesan susulan terkait posisi yang sudah terbuka. "
-            "Panggil tool ini HANYA jika pesan jelas berisi instruksi tindak "
-            "lanjut. Kalau cuma info tanpa instruksi jelas, pakai kind='info'."
+            "Sebuah pesan bisa berisi LEBIH DARI SATU instruksi sekaligus "
+            "(mis. 'close partially AND move SL to entry'), jadi kinds adalah "
+            "daftar. Kalau bahasa pesan cuma saran/kondisional (mis. 'you may', "
+            "'atau') dan TIDAK ada instruksi tegas yang cocok kategori di bawah, "
+            "atau pesan cuma update info tanpa instruksi, kembalikan kinds "
+            "kosong []. Jangan longgarkan kategori demi memaksa cocok."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "kind": {
+                "symbol": {
                     "type": "string",
-                    "enum": ["move_sl_be", "partial_close_tp1", "close_all", "info"],
-                }
+                    "description": "Simbol/instrumen yang dirujuk pesan ini, kalau disebut.",
+                },
+                "kinds": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["move_sl_be", "partial_close_tp1", "close_all"],
+                    },
+                    "description": (
+                        "move_sl_be HANYA jika SL dipindah persis ke harga entry/breakeven "
+                        "(bukan ke harga baru yang lain). partial_close_tp1 HANYA jika ada "
+                        "instruksi tegas untuk menutup sebagian posisi. Kosongkan array kalau ragu."
+                    ),
+                },
             },
-            "required": ["kind"],
+            "required": ["kinds"],
         },
     },
 }
@@ -178,13 +194,17 @@ def parse_followup_with_llm(
         return None
 
     args = _first_tool_call_args(response)
-    if args is None or not args.get("kind"):
-        log.info("LLM tidak yakin jenis follow-up di pesan #%s — dilewati", message_id)
+    if args is None:
+        # Model tidak memanggil tool sama sekali -> tidak yakin ini follow-up terkait
+        log.info("LLM tidak yakin pesan #%s adalah follow-up — dilewati", message_id)
         return None
 
+    # kinds=[] valid di sini: berarti follow-up dikenali tapi tidak ada aksi
+    # otomatis yang cocok (info-only) — beda dari args is None (tidak yakin sama sekali).
     return FollowUp(
         message_id=message_id,
         reply_to_msg_id=reply_to_msg_id,
-        kind=args["kind"],
+        kinds=args.get("kinds") or [],
         raw_text=text,
+        symbol=args.get("symbol"),
     )
