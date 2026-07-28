@@ -2,6 +2,7 @@ telethon>=1.36
 pyyaml>=6.0
 python-dotenv>=1.0
 openai>=1.50  # dipakai untuk MiniMax API (kompatibel format OpenAI)
+requests>=2.31  # notifikasi via Telegram Bot API
 pytest>=8.0
 
 # Windows-only — jalankan mini PC:

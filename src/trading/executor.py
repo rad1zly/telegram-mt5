@@ -23,6 +23,9 @@ class ExecutionResult:
     success: bool
     detail: str
     ticket: Optional[int] = None
+    lot: Optional[float] = None
+    price: Optional[float] = None
+    broker_symbol: Optional[str] = None
 
 
 def execute_signal(
@@ -82,4 +85,7 @@ def execute_signal(
             f"lot={lot_result.lot}{capped_note} @ {order_result.price}"
         ),
         ticket=order_result.ticket,
+        lot=lot_result.lot,
+        price=order_result.price,
+        broker_symbol=broker_symbol,
     )
