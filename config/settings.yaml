@@ -44,7 +44,8 @@ symbols:
   # sebelum trading live diaktifkan. Jangan diisi manual dengan tebakan —
   # kalau broker punya beberapa varian (XAUUSD vs XAUUSD.raw) salah pilih
   # berarti order jalan di instrumen/akun yang salah tanpa ketahuan.
-  broker_overrides: {}
+  broker_overrides:
+    US30: "DJ30"
 
 notifier:
   bot_token_env: TELEGRAM_BOT_TOKEN
