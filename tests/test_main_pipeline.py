@@ -37,6 +37,7 @@ def _make_ctx(tmp_path, **settings_overrides):
     settings = {
         "risk": {"usd_per_trade": 50.0, "max_lot_cap": 5.0, "max_trades_per_day": 20},
         "followup": {"move_sl_to_be": True, "partial_close_tp1": True, "partial_close_percent": 50, "close_all": False},
+        "guards": {"max_price_deviation_pips": 15.0, "max_spread_pips": 30.0},
     }
     for key, value in settings_overrides.items():
         settings[key].update(value)

@@ -94,6 +94,8 @@ async def handle_entry_signal(ctx: Context, signal, msg) -> None:
             broker_symbols=ctx.broker_symbols,
             risk_usd=ctx.settings["risk"]["usd_per_trade"],
             max_lot_cap=ctx.settings["risk"]["max_lot_cap"],
+            max_price_deviation_pips=ctx.settings["guards"]["max_price_deviation_pips"],
+            price_deviation_overrides=ctx.settings["guards"].get("price_deviation_overrides"),
         ),
     )
 

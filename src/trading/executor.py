@@ -2,11 +2,11 @@
 dari risiko tetap -> kirim order ke MT5.
 
 Ini dipakai tools/execute_test_signal.py untuk uji coba manual satu-satu
-ke akun demo. Guard penuh (spread, deviasi harga, max trade/hari, daily
-loss cap — lihat plan Fase 3) belum semua ada di sini; itu menyusul saat
-pipeline live 24/7 dibangun. Untuk sekarang, guard yang sudah aktif:
-simbol harus ke-resolve jelas, SL harus ada, dan lot harus lolos validasi
-volume_min broker.
+ke akun demo. Guard penuh (spread, max trade/hari, daily loss cap — lihat
+plan Fase 3) belum semua ada di sini; itu menyusul saat pipeline live
+24/7 dibangun. Untuk sekarang, guard yang sudah aktif: simbol harus
+ke-resolve jelas, SL harus ada, dan lot harus lolos validasi volume_min
+broker.
 """
 
 from dataclasses import dataclass
@@ -28,13 +28,42 @@ class ExecutionResult:
     broker_symbol: Optional[str] = None
 
 
+def _resolve_effective_entry(signal: Signal, current_price: float) -> float:
+    """Kalau signal.entry tunggal, pakai apa adanya. Kalau entry berupa
+    rentang (mis. 4020-4025):
+
+    - harga sekarang SUDAH di dalam rentang -> pakai harga sekarang
+      (market order, tidak perlu tunggu — kita memang sudah di zona itu);
+    - harga sekarang di LUAR rentang -> pakai sisi rentang yang TERDEKAT
+      dari harga sekarang (bukan titik tengah), supaya order/pending yang
+      dipasang punya peluang fill paling masuk akal dan risiko (jarak ke
+      SL) terhitung akurat sesuai posisi harga sungguhan.
+    """
+    if signal.entry is not None:
+        return signal.entry
+
+    low, high = signal.entry_range
+    if low <= current_price <= high:
+        return current_price
+    if current_price < low:
+        return low
+    return high
+
+
 def execute_signal(
     signal: Signal,
     resolver: SymbolResolver,
     broker_symbols: list[str],
     risk_usd: float,
     max_lot_cap: float,
+    max_price_deviation_pips: float = 15.0,
+    price_deviation_overrides: Optional[dict] = None,
 ) -> ExecutionResult:
+    """price_deviation_overrides: {canonical_symbol: pips} — satu angka
+    'pips' global TIDAK bisa cocok untuk semua instrumen sekaligus (mis.
+    gold kuotasi 2 desimal: 15 pip cuma $0.15, jauh lebih kecil dari gap
+    harga wajar yang sering terjadi). Override per simbol menang atas
+    max_price_deviation_pips global kalau canonical symbol-nya ada di sini."""
     if signal.sl is None:
         return ExecutionResult(success=False, detail="Signal tidak punya SL — ditolak, tidak bisa hitung risiko")
 
@@ -43,11 +72,19 @@ def execute_signal(
         return ExecutionResult(success=False, detail=f"Simbol ditolak: {resolved.error}")
     broker_symbol = resolved.matched
 
+    effective_deviation_pips = (price_deviation_overrides or {}).get(
+        resolved.canonical, max_price_deviation_pips
+    )
+
     info = mt5_client.get_symbol_info(broker_symbol)
     if info is None:
         return ExecutionResult(success=False, detail=f"symbol_info kosong untuk {broker_symbol}")
 
-    entry = signal.entry if signal.entry is not None else sum(signal.entry_range) / 2
+    current_price = mt5_client.get_current_price(broker_symbol, signal.action)
+    if current_price is None:
+        return ExecutionResult(success=False, detail=f"Tidak bisa ambil harga live untuk {broker_symbol}")
+
+    entry = _resolve_effective_entry(signal, current_price)
 
     lot_result = calculate_lot(
         entry=entry,
@@ -73,6 +110,7 @@ def execute_signal(
         sl=signal.sl,
         tp=tp,
         comment=f"tg-signal-{signal.message_id}",
+        max_deviation_pips=effective_deviation_pips,
     )
     if not order_result.success:
         return ExecutionResult(success=False, detail=f"Order gagal: {order_result.error}")

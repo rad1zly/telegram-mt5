@@ -28,6 +28,7 @@ def test_execute_signal_happy_path(monkeypatch):
     resolver = SymbolResolver(ALIASES)
 
     monkeypatch.setattr(mt5_client, "get_symbol_info", lambda symbol: _fake_symbol_info())
+    monkeypatch.setattr(mt5_client, "get_current_price", lambda symbol, direction: 4344.5)
     monkeypatch.setattr(
         mt5_client,
         "send_order",
@@ -85,6 +86,7 @@ def test_execute_signal_rejected_when_lot_below_volume_min(monkeypatch):
     resolver = SymbolResolver(ALIASES)
 
     monkeypatch.setattr(mt5_client, "get_symbol_info", lambda symbol: _fake_symbol_info())
+    monkeypatch.setattr(mt5_client, "get_current_price", lambda symbol, direction: 100.0)
 
     result = executor.execute_signal(
         signal=signal,
@@ -98,36 +100,12 @@ def test_execute_signal_rejected_when_lot_below_volume_min(monkeypatch):
     assert "Lot ditolak" in result.detail
 
 
-def test_execute_signal_uses_range_midpoint_when_no_single_entry(monkeypatch):
-    signal = Signal(message_id=5, action="SELL", symbol="GOLD", entry=None, entry_range=(4344.0, 4346.0), sl=4348.0, tp=[4333.0])
-    resolver = SymbolResolver(ALIASES)
-
-    captured = {}
-
-    def fake_send_order(**kwargs):
-        captured.update(kwargs)
-        return OrderResult(success=True, ticket=1, price=kwargs["entry"], kind="MARKET")
-
-    monkeypatch.setattr(mt5_client, "get_symbol_info", lambda symbol: _fake_symbol_info())
-    monkeypatch.setattr(mt5_client, "send_order", fake_send_order)
-
-    result = executor.execute_signal(
-        signal=signal,
-        resolver=resolver,
-        broker_symbols=["XAUUSD"],
-        risk_usd=50.0,
-        max_lot_cap=5.0,
-    )
-
-    assert result.success
-    assert captured["entry"] == 4345.0  # midpoint dari (4344, 4346)
-
-
 def test_execute_signal_reports_order_send_failure(monkeypatch):
     signal = Signal(message_id=6, action="SELL", symbol="GOLD", entry=4344.5, sl=4348.0, tp=[4333.0])
     resolver = SymbolResolver(ALIASES)
 
     monkeypatch.setattr(mt5_client, "get_symbol_info", lambda symbol: _fake_symbol_info())
+    monkeypatch.setattr(mt5_client, "get_current_price", lambda symbol, direction: 4344.5)
     monkeypatch.setattr(
         mt5_client,
         "send_order",
@@ -144,3 +122,107 @@ def test_execute_signal_reports_order_send_failure(monkeypatch):
 
     assert not result.success
     assert "Order gagal" in result.detail
+
+
+def test_execute_signal_rejected_when_price_unavailable(monkeypatch):
+    signal = Signal(message_id=7, action="SELL", symbol="GOLD", entry=4344.5, sl=4348.0, tp=[4333.0])
+    resolver = SymbolResolver(ALIASES)
+
+    monkeypatch.setattr(mt5_client, "get_symbol_info", lambda symbol: _fake_symbol_info())
+    monkeypatch.setattr(mt5_client, "get_current_price", lambda symbol, direction: None)
+
+    result = executor.execute_signal(
+        signal=signal,
+        resolver=resolver,
+        broker_symbols=["XAUUSD"],
+        risk_usd=50.0,
+        max_lot_cap=5.0,
+    )
+
+    assert not result.success
+    assert "harga live" in result.detail
+
+
+class TestEntryRangeResolution:
+    """4020-4025: harga di dalam rentang -> market di harga sekarang;
+    di luar rentang -> sisi TERDEKAT dari rentang, bukan titik tengah."""
+
+    def _run(self, monkeypatch, current_price):
+        signal = Signal(message_id=8, action="BUY", symbol="GOLD", entry=None, entry_range=(4020.0, 4025.0), sl=4010.0, tp=[4040.0])
+        resolver = SymbolResolver(ALIASES)
+
+        captured = {}
+
+        def fake_send_order(**kwargs):
+            captured.update(kwargs)
+            return OrderResult(success=True, ticket=1, price=kwargs["entry"], kind="MARKET")
+
+        monkeypatch.setattr(mt5_client, "get_symbol_info", lambda symbol: _fake_symbol_info())
+        monkeypatch.setattr(mt5_client, "get_current_price", lambda symbol, direction: current_price)
+        monkeypatch.setattr(mt5_client, "send_order", fake_send_order)
+
+        result = executor.execute_signal(
+            signal=signal, resolver=resolver, broker_symbols=["XAUUSD"],
+            risk_usd=50.0, max_lot_cap=5.0,
+        )
+        assert result.success
+        return captured["entry"]
+
+    def test_price_inside_range_uses_current_price(self, monkeypatch):
+        assert self._run(monkeypatch, current_price=4022.0) == 4022.0
+
+    def test_price_below_range_uses_nearest_low_edge(self, monkeypatch):
+        assert self._run(monkeypatch, current_price=4015.0) == 4020.0
+
+    def test_price_above_range_uses_nearest_high_edge(self, monkeypatch):
+        assert self._run(monkeypatch, current_price=4030.0) == 4025.0
+
+
+def test_price_deviation_override_reaches_send_order(monkeypatch):
+    # canonical XAUUSD punya override 100 pips -> harus dipakai, bukan
+    # max_price_deviation_pips global (15)
+    signal = Signal(message_id=9, action="BUY", symbol="GOLD", entry=4020.0, sl=4010.0, tp=[4040.0])
+    resolver = SymbolResolver(ALIASES)
+
+    captured = {}
+
+    def fake_send_order(**kwargs):
+        captured.update(kwargs)
+        return OrderResult(success=True, ticket=1, price=kwargs["entry"], kind="MARKET")
+
+    monkeypatch.setattr(mt5_client, "get_symbol_info", lambda symbol: _fake_symbol_info())
+    monkeypatch.setattr(mt5_client, "get_current_price", lambda symbol, direction: 4019.0)
+    monkeypatch.setattr(mt5_client, "send_order", fake_send_order)
+
+    executor.execute_signal(
+        signal=signal, resolver=resolver, broker_symbols=["XAUUSD"],
+        risk_usd=50.0, max_lot_cap=5.0,
+        max_price_deviation_pips=15.0,
+        price_deviation_overrides={"XAUUSD": 100.0},
+    )
+
+    assert captured["max_deviation_pips"] == 100.0
+
+
+def test_price_deviation_override_absent_falls_back_to_global(monkeypatch):
+    signal = Signal(message_id=10, action="BUY", symbol="GOLD", entry=4020.0, sl=4010.0, tp=[4040.0])
+    resolver = SymbolResolver(ALIASES)
+
+    captured = {}
+
+    def fake_send_order(**kwargs):
+        captured.update(kwargs)
+        return OrderResult(success=True, ticket=1, price=kwargs["entry"], kind="MARKET")
+
+    monkeypatch.setattr(mt5_client, "get_symbol_info", lambda symbol: _fake_symbol_info())
+    monkeypatch.setattr(mt5_client, "get_current_price", lambda symbol, direction: 4019.0)
+    monkeypatch.setattr(mt5_client, "send_order", fake_send_order)
+
+    executor.execute_signal(
+        signal=signal, resolver=resolver, broker_symbols=["XAUUSD"],
+        risk_usd=50.0, max_lot_cap=5.0,
+        max_price_deviation_pips=15.0,
+        price_deviation_overrides={"EURUSD": 50.0},  # simbol lain, tidak match
+    )
+
+    assert captured["max_deviation_pips"] == 15.0

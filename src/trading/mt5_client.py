@@ -69,6 +69,39 @@ def get_all_symbol_names() -> list[str]:
     return [s.name for s in _mt5().symbols_get()]
 
 
+def get_current_price(symbol: str, direction: str) -> Optional[float]:
+    """Ask untuk BUY, bid untuk SELL — sisi harga yang relevan untuk
+    order searah itu."""
+    tick = _mt5().symbol_info_tick(symbol)
+    if tick is None:
+        return None
+    return tick.ask if direction == "BUY" else tick.bid
+
+
+def pip_size(info) -> float:
+    """Heuristik konversi pip standar: broker 3/5 digit (mis. EURUSD di
+    1.08123) -> 1 pip = 10*point; broker 2/4 digit -> 1 pip = point.
+    Ini cuma untuk guard yang human-readable (max_price_deviation_pips di
+    config), bukan dipakai untuk perhitungan lot/risiko."""
+    return info.point * 10 if info.digits in (3, 5) else info.point
+
+
+def compute_market_tolerance(info, max_deviation_pips: float) -> float:
+    """Jarak (dalam satuan harga) di mana entry dianggap 'sudah di harga'
+    -> market order, bukan pending. Diambil dari yang LEBIH BESAR antara:
+
+    (a) toleransi bisnis dari config (max_price_deviation_pips) — kalau
+        entry cuma sedikit meleset dari harga sekarang, anggap saja market;
+    (b) jarak minimum stop broker (trade_stops_level) + buffer kecil —
+        supaya kita tidak coba pasang pending order yang PASTI ditolak
+        broker karena kepepet ke harga sekarang.
+    """
+    business_tolerance = max_deviation_pips * pip_size(info)
+    stops_level_points = getattr(info, "trade_stops_level", 0) or 0
+    broker_min_distance = (stops_level_points + 5) * info.point
+    return max(business_tolerance, broker_min_distance)
+
+
 def decide_order_kind(direction: str, entry: float, current_price: float, tolerance: float) -> str:
     """Pure logic, tidak butuh MT5 — testable di mesin manapun.
 
@@ -130,6 +163,7 @@ def send_order(
     sl: float,
     tp: float,
     comment: str = "telegram-mt5",
+    max_deviation_pips: float = 15.0,
 ) -> OrderResult:
     mt5 = _mt5()
 
@@ -142,7 +176,7 @@ def send_order(
         return OrderResult(success=False, error=f"symbol_info kosong untuk {symbol}")
 
     current_price = tick.ask if direction == "BUY" else tick.bid
-    tolerance = info.point * 50  # toleransi kasar ~5 pip; dibuat konfigurabel di Fase 4
+    tolerance = compute_market_tolerance(info, max_deviation_pips)
     kind = decide_order_kind(direction, entry, current_price, tolerance)
     order_type = _order_type_constant(mt5, kind, direction)
 

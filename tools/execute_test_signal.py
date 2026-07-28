@@ -113,6 +113,8 @@ def main():
         broker_symbols=broker_symbols,
         risk_usd=settings["risk"]["usd_per_trade"],
         max_lot_cap=settings["risk"]["max_lot_cap"],
+        max_price_deviation_pips=settings["guards"]["max_price_deviation_pips"],
+        price_deviation_overrides=settings["guards"].get("price_deviation_overrides"),
     )
 
     print(f"\n{'BERHASIL' if result.success else 'GAGAL'}: {result.detail}")
