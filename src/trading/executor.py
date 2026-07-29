@@ -65,12 +65,20 @@ def execute_signal(
     max_lot_cap: float,
     max_price_deviation_pips: float = 15.0,
     price_deviation_overrides: Optional[dict] = None,
+    min_sl_distance_overrides: Optional[dict] = None,
 ) -> ExecutionResult:
     """price_deviation_overrides: {canonical_symbol: pips} — satu angka
     'pips' global TIDAK bisa cocok untuk semua instrumen sekaligus (mis.
     gold kuotasi 2 desimal: 15 pip cuma $0.15, jauh lebih kecil dari gap
     harga wajar yang sering terjadi). Override per simbol menang atas
-    max_price_deviation_pips global kalau canonical symbol-nya ada di sini."""
+    max_price_deviation_pips global kalau canonical symbol-nya ada di sini.
+
+    min_sl_distance_overrides: {canonical_symbol: jarak minimum dalam
+    satuan harga} — pengaman terhadap SL yang salah baca/salah ketik
+    (mis. channel nulis SL yang jaraknya cuma 1 poin dari entry padahal
+    biasanya puluhan poin). Diturunkan dari median jarak SL riwayat
+    channel per simbol, bukan angka global — skala harga tiap instrumen
+    beda jauh (GOLD vs indeks vs forex 4 digit)."""
     if signal.sl is None:
         return ExecutionResult(success=False, detail="Signal tidak punya SL — ditolak, tidak bisa hitung risiko")
 
@@ -93,6 +101,8 @@ def execute_signal(
 
     entry = _resolve_effective_entry(signal, current_price)
 
+    min_sl_distance = (min_sl_distance_overrides or {}).get(resolved.canonical, 0.0)
+
     lot_result = calculate_lot(
         entry=entry,
         sl=signal.sl,
@@ -103,6 +113,7 @@ def execute_signal(
         volume_max=info.volume_max,
         risk_usd=risk_usd,
         max_lot_cap=max_lot_cap,
+        min_sl_distance=min_sl_distance,
     )
     if not lot_result.ok:
         return ExecutionResult(success=False, detail=f"Lot ditolak: {lot_result.error}")

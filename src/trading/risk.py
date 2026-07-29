@@ -31,10 +31,19 @@ def calculate_lot(
     volume_max: float,
     risk_usd: float,
     max_lot_cap: float,
+    min_sl_distance: float = 0.0,
 ) -> LotSizingResult:
     sl_distance = abs(entry - sl)
     if sl_distance <= 0:
         return LotSizingResult(lot=None, error="Jarak SL ke entry nol/negatif — signal tidak valid")
+    if min_sl_distance > 0 and sl_distance < min_sl_distance:
+        return LotSizingResult(
+            lot=None,
+            error=(
+                f"Jarak SL ({sl_distance:.5f}) di bawah minimum wajar untuk simbol ini "
+                f"({min_sl_distance:.5f}) — kemungkinan salah baca angka SL, ditolak demi keamanan."
+            ),
+        )
     if tick_size <= 0 or tick_value <= 0:
         return LotSizingResult(lot=None, error="tick_size/tick_value dari broker tidak valid (<=0)")
 

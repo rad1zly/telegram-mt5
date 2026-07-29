@@ -115,6 +115,7 @@ def main():
         max_lot_cap=settings["risk"]["max_lot_cap"],
         max_price_deviation_pips=settings["guards"]["max_price_deviation_pips"],
         price_deviation_overrides=settings["guards"].get("price_deviation_overrides"),
+        min_sl_distance_overrides=settings["guards"].get("min_sl_distance_overrides"),
     )
 
     print(f"\n{'BERHASIL' if result.success else 'GAGAL'}: {result.detail}")
