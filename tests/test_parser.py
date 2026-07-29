@@ -228,3 +228,40 @@ def test_followup_header_with_arbitrary_word_before_update():
     for header in ["GOLD | Final Update", "USNAS100 | Trade Update"]:
         followup = parse_followup_regex(f"{header}\n\nSome commentary here", message_id=1010, reply_to_msg_id=None)
         assert followup is not None, f"gagal untuk header: {header}"
+
+
+def test_sl_label_stop_loss_two_words():
+    text = "SPX\n\nsell below 6548\n\nstop loss 6551\n\ntarget 6535 - 6500 - 6460"
+    signal = parse_entry_signal(text, message_id=1011)
+    assert signal is not None
+    assert signal.sl == 6551.0
+
+
+def test_direction_connector_from_and_again():
+    text1 = "GOLD\n\nSell from 5077\n\nTp.: 5067, 5060, 5027\nSl.: 5081"
+    signal1 = parse_entry_signal(text1, message_id=1012)
+    assert signal1 is not None
+    assert signal1.entry == 5077.0
+
+    text2 = "GOLD\n\nSell AGAIN below 5024\n\nTarget: 5007, 4983, 4966\nSl: 5028"
+    signal2 = parse_entry_signal(text2, message_id=1013)
+    assert signal2 is not None
+    assert signal2.entry == 5024.0
+
+
+def test_symbol_and_direction_crammed_same_line_no_separator():
+    # "spx sell below 6548" — simbol dan arah nyatu di satu baris tanpa '|'
+    text = "spx sell below 6548\n\nstop loss 6551\n\ntarget 6535 - 6500 - 6460"
+    signal = parse_entry_signal(text, message_id=1014)
+    assert signal is not None
+    assert signal.symbol == "SPX"
+    assert signal.entry == 6548.0
+
+
+def test_symbol_and_direction_crammed_with_pipe():
+    # "GOLD | Sell Now below 4542" — simbol+arah di baris sama dgn '|', BUKAN dekorasi
+    text = "GOLD | Sell Now below 4542\n\nsl 4544\n\nTarget 4500, 4480"
+    signal = parse_entry_signal(text, message_id=1015)
+    assert signal is not None
+    assert signal.symbol == "GOLD"
+    assert signal.entry == 4542.0

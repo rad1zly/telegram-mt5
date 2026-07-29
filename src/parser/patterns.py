@@ -34,10 +34,11 @@ SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9]{2,9}$", re.IGNORECASE)
 _NUM = r"\d[\d,]*\.?\d*"
 
 DIRECTION_RE = re.compile(
-    # "@"/"now"/"while" bisa muncul dalam kombinasi/urutan apapun sebelum
-    # below/above (diamati: "Sell now below X", "Sell While Above X",
-    # "Sell Now while below X", "Sell @ Now 52080", "Sell @ 7385").
-    r"\b(buy|sell)\b\s*(?:@\s*)?(?:(?:now|while)\s+)*(?:below|above)?\s*"
+    # "@"/"now"/"while"/"from"/"again" bisa muncul dalam kombinasi/urutan
+    # apapun sebelum below/above (diamati: "Sell now below X",
+    # "Sell While Above X", "Sell Now while below X", "Sell @ Now 52080",
+    # "Sell @ 7385", "Sell From 5077", "Sell AGAIN below X").
+    r"\b(buy|sell)\b\s*(?:@\s*)?(?:(?:now|while|from|again)\s+)*(?:below|above)?\s*"
     rf"({_NUM})\s*(?:-\s*({_NUM}))?",
     re.IGNORECASE,
 )
@@ -51,7 +52,9 @@ MARKET_DIRECTION_RE = re.compile(r"\b(buy|sell)\b\s*(?:@\s*)?now\b", re.IGNORECA
 # \b setelah alternasi wajib — tanpa itu "to" bisa salah cocok dengan awal
 # kata "Total"/"Today"/"Touched" dll.
 TP_LINE_RE = re.compile(r"^\s*(?:target|tp|to)\b[.,:]*\s*(.+)$", re.IGNORECASE | re.MULTILINE)
-SL_LINE_RE = re.compile(rf"^\s*sl[.,:]*\s*({_NUM})", re.IGNORECASE | re.MULTILINE)
+
+# "sl" ATAU "stop loss" (dua kata, spasi bebas) sebagai label.
+SL_LINE_RE = re.compile(rf"^\s*(?:sl|stop\s*loss)\b[.,:]*\s*({_NUM})", re.IGNORECASE | re.MULTILINE)
 
 
 def _to_float(raw: str) -> Optional[float]:
@@ -91,16 +94,30 @@ def parse_entry_signal(text: str, message_id: int) -> Optional[Signal]:
         return None
 
     # "|" di header BELUM TENTU berarti dekorasi — kadang cuma nyasar tanpa
-    # isi ("GOLD | "). Simbol dianggap valid selama TIDAK ADA teks berarti
-    # setelah "|" pertama; kalau ada (mis. "GOLD | Bullish Setup"), itu
-    # header dekoratif -> serahkan ke LLM fallback, jangan ditebak regex.
+    # isi ("GOLD | "), dan kadang malah berisi arah+harga yang di-cram di
+    # baris yang sama ("GOLD | Sell Now below 4542"). Simbol diterima
+    # selama teks setelah "|" (kalau ada) KOSONG ATAU berisi direction yang
+    # valid sendiri; kalau berisi teks lain (mis. "Bullish Setup"), itu
+    # header dekoratif sungguhan -> serahkan ke LLM fallback.
     header_parts = first_line.split("|")
     symbol_candidate = header_parts[0].strip()
-    if any(part.strip() for part in header_parts[1:]):
-        return None
+    remainder = "|".join(header_parts[1:]).strip()
 
-    # Buang keterangan dalam kurung di baris simbol, mis. "US30 (Dow Jones)".
+    # Buang keterangan dalam kurung DULU, mis. "US30 (Dow Jones)" -> "US30",
+    # sebelum cek spasi tersisa (supaya tidak salah dianggap simbol+direction
+    # crammed di baris yang sama).
     symbol_candidate = re.sub(r"\s*\([^)]*\)\s*$", "", symbol_candidate).strip()
+
+    # Tanpa "|" sama sekali tapi baris simbol masih berisi >1 token (mis.
+    # "spx sell below 6548") — coba pisah: token pertama simbol, sisanya
+    # kandidat direction.
+    if not remainder and " " in symbol_candidate:
+        first_token, _, rest = symbol_candidate.partition(" ")
+        if SYMBOL_RE.match(first_token):
+            symbol_candidate, remainder = first_token, rest.strip()
+
+    if remainder and not (DIRECTION_RE.search(remainder) or MARKET_DIRECTION_RE.search(remainder)):
+        return None
 
     if not SYMBOL_RE.match(symbol_candidate):
         return None
