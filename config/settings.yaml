@@ -1,19 +1,15 @@
 mode: demo
 telegram:
-  channel: '-1004346298355'
+  channel: '-1002354707631'
   session_name: session/user
 risk:
-  usd_per_trade: 50.0
+  usd_per_trade: 30.0
   max_lot_cap: 5.0
   max_trades_per_day: 20
   daily_loss_cap_usd: 200.0
 guards:
   max_price_deviation_pips: 15
   max_spread_pips: 30
-  # Override per simbol (canonical) — 15 pip global cuma $0.15 di GOLD (2 desimal),
-  # jauh lebih kecil dari gap harga yang wajar terjadi. Tanpa ini, gap sekecil
-  # $1 antara harga signal dan harga live tetap dianggap "jauh" -> pending order
-  # (BUY_STOP/SELL_LIMIT dst) padahal harusnya cukup dieksekusi market.
   price_deviation_overrides:
     XAUUSD: 100
     XAGUSD: 100
