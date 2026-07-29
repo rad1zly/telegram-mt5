@@ -5,15 +5,21 @@ tests/fixtures/signals.jsonl. Format channel yang diamati:
 
     <Buy/Sell> [now] [below/above] <entry atau rentang entry>
 
-    <Target|tp>[.]: <tp1>, <tp2>, ...
-    <Sl>[.]: <angka>
+    <Target|tp>[.,:]* <tp1>, <tp2>, ...
+    <Sl>[.,:]* <angka>
 
     [risk ...] [timeframe ...] [current price ...]  <- diabaikan
 
+Channel ini tidak konsisten soal tanda baca setelah label ("Sl.", "Sl:",
+"Sl,", bahkan "Sl,.") — jadi label diikuti sembarang gabungan titik/koma/
+titik-dua sebelum spasi+angka, BUKAN cuma titik-opsional seperti draf awal.
+
 Prinsip sama dengan modul lain: kalau simbol, arah, SL, atau TP tidak
-ketemu, return None — jangan mengarang nilai yang tidak ada di teks.
-Pesan "Live Update" / follow-up sengaja ditolak di sini (lihat
-followup.py), supaya tidak salah dianggap entry baru.
+ketemu ATAU gagal dikonversi ke angka, return None — jangan mengarang
+nilai, dan jangan pernah biarkan satu pesan aneh melempar exception yang
+menghentikan seluruh batch. Pesan "Live Update" / follow-up sengaja
+ditolak di sini (lihat followup.py), supaya tidak salah dianggap entry
+baru.
 """
 
 import re
@@ -23,30 +29,51 @@ from src.parser.schema import Signal
 
 SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9]{2,9}$", re.IGNORECASE)
 
+# Wajib diawali digit asli (bukan koma) supaya label yang diikuti koma
+# nyasar (mis. "Sl, 23260") tidak ikut tertangkap sebagai bagian angka.
+_NUM = r"\d[\d,]*\.?\d*"
+
 DIRECTION_RE = re.compile(
-    r"\b(buy|sell)\b\s*(?:now\s+)?(?:below|above)?\s*"
-    r"([\d,]+\.?\d*)\s*(?:-\s*([\d,]+\.?\d*))?",
+    # "@"/"now"/"while" bisa muncul dalam kombinasi/urutan apapun sebelum
+    # below/above (diamati: "Sell now below X", "Sell While Above X",
+    # "Sell Now while below X", "Sell @ Now 52080", "Sell @ 7385").
+    r"\b(buy|sell)\b\s*(?:@\s*)?(?:(?:now|while)\s+)*(?:below|above)?\s*"
+    rf"({_NUM})\s*(?:-\s*({_NUM}))?",
     re.IGNORECASE,
 )
 
-TP_LINE_RE = re.compile(r"^\s*(?:target|tp)\.?\s*:?\s*(.+)$", re.IGNORECASE | re.MULTILINE)
-SL_LINE_RE = re.compile(r"^\s*sl\.?\s*:?\s*([\d,]+\.?\d*)", re.IGNORECASE | re.MULTILINE)
+# Fallback kalau DIRECTION_RE gagal (tidak ada angka entry sama sekali) —
+# "Sell Now" / "Buy Now" polos berarti market order tanpa level spesifik.
+# Wajib ada kata "now" sebagai penanda keyakinan; "Sell"/"Buy" saja terlalu
+# ambigu (bisa muncul di kalimat commentary biasa).
+MARKET_DIRECTION_RE = re.compile(r"\b(buy|sell)\b\s*(?:@\s*)?now\b", re.IGNORECASE)
+
+TP_LINE_RE = re.compile(r"^\s*(?:target|tp)[.,:]*\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+SL_LINE_RE = re.compile(rf"^\s*sl[.,:]*\s*({_NUM})", re.IGNORECASE | re.MULTILINE)
 
 
-def _to_float(raw: str) -> float:
-    return float(raw.replace(",", ""))
+def _to_float(raw: str) -> Optional[float]:
+    """None kalau gagal dikonversi — dipakai sebagai sinyal 'tolak', bukan
+    exception yang bisa menghentikan seluruh batch parsing."""
+    try:
+        return float(raw.replace(",", ""))
+    except ValueError:
+        return None
 
 
 def _parse_number_list(raw: str) -> list[float]:
+    # Channel kadang pisah TP pakai koma ("48420, 48300"), kadang pakai
+    # dash ("Target 7367 - 7342") — dua-duanya diterima. Harga di
+    # instrumen ini selalu positif jadi "-" aman dianggap separator,
+    # bukan tanda minus.
     values = []
-    for part in raw.split(","):
+    for part in re.split(r"[,\-]", raw):
         part = part.strip()
         if not part:
             continue
-        try:
-            values.append(_to_float(part))
-        except ValueError:
-            continue
+        value = _to_float(part)
+        if value is not None:
+            values.append(value)
     return values
 
 
@@ -65,17 +92,33 @@ def parse_entry_signal(text: str, message_id: int) -> Optional[Signal]:
         return None
     symbol = first_line.upper()
 
+    entry_low = None
+    entry_high = None
+
     direction_match = DIRECTION_RE.search(text)
-    if not direction_match:
-        return None
-    action = direction_match.group(1).upper()
-    entry_low = _to_float(direction_match.group(2))
-    entry_high = _to_float(direction_match.group(3)) if direction_match.group(3) else None
+    if direction_match:
+        action = direction_match.group(1).upper()
+        entry_low = _to_float(direction_match.group(2))
+        if entry_low is None:
+            return None
+        if direction_match.group(3) is not None:
+            entry_high = _to_float(direction_match.group(3))
+            if entry_high is None:
+                return None  # capture ada tapi gagal parse -> jangan asal pakai entry_low doang
+    else:
+        # Tidak ada angka entry sama sekali -> coba pola "Buy/Sell Now"
+        # polos (market order, tanpa level spesifik).
+        market_match = MARKET_DIRECTION_RE.search(text)
+        if not market_match:
+            return None
+        action = market_match.group(1).upper()
 
     sl_match = SL_LINE_RE.search(text)
     if not sl_match:
         return None
     sl = _to_float(sl_match.group(1))
+    if sl is None:
+        return None
 
     tp_match = TP_LINE_RE.search(text)
     if not tp_match:

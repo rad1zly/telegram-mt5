@@ -24,7 +24,14 @@ from typing import Optional
 
 from src.parser.schema import FollowUp
 
-LIVE_UPDATE_HEADER_RE = re.compile(r"^\s*([A-Za-z0-9]+)\s*\|\s*live\s*update", re.IGNORECASE)
+LIVE_UPDATE_HEADER_RE = re.compile(
+    r"^\s*([A-Za-z0-9]+)"                    # simbol pertama
+    r"(?:\s*&\s*[A-Za-z0-9]+)?"              # simbol kedua opsional ("SYM1 & SYM2 | ..."), diabaikan untuk sekarang
+    r"\s*[-|]?\s*"                            # separator: '|', '-', atau cuma spasi ("GOLD LIVE UPDATE")
+    r"(?:live\s+|new\s+)?"                    # kata sifat opsional sebelum "update"
+    r"update\b",
+    re.IGNORECASE,
+)
 
 MOVE_SL_BE_RE = re.compile(
     r"\bmove\b[^.\n]{0,40}\b(?:stop.loss|stop\s+loss|sl)\b[^.\n]{0,20}\bto\b[^.\n]{0,15}"

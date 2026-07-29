@@ -38,9 +38,16 @@ def _resolve_effective_entry(signal: Signal, current_price: float) -> float:
       dari harga sekarang (bukan titik tengah), supaya order/pending yang
       dipasang punya peluang fill paling masuk akal dan risiko (jarak ke
       SL) terhitung akurat sesuai posisi harga sungguhan.
+
+    Kalau signal.entry DAN signal.entry_range dua-duanya None (channel
+    cuma bilang "Sell Now" tanpa level spesifik) -> market di harga
+    sekarang, tidak ada yang perlu diresolve.
     """
     if signal.entry is not None:
         return signal.entry
+
+    if signal.entry_range is None:
+        return current_price
 
     low, high = signal.entry_range
     if low <= current_price <= high:

@@ -38,8 +38,13 @@ def _row_by_message_id(rows: list[dict], message_id: int) -> dict:
 
 
 def test_fixture_has_expected_real_messages():
+    # Fixture bisa berupa 5 sample awal ATAU dump riwayat penuh (ribuan
+    # pesan) — yang penting sample message_id yang dites spesifik di bawah
+    # (3,4,5,6,7) memang ada di dalamnya.
     rows = _load_fixture_rows()
-    assert len(rows) == 5
+    assert len(rows) >= 5
+    ids_present = {row["message_id"] for row in rows}
+    assert {3, 4, 5, 6, 7}.issubset(ids_present)
 
 
 def test_entry_signal_us30_single_entry_multi_tp():
@@ -133,3 +138,45 @@ def test_followup_move_sl_to_arbitrary_price_is_not_move_sl_be():
     )
     assert followup is not None
     assert "move_sl_be" not in followup.kinds
+
+
+def test_entry_plain_sell_now_without_price_is_market_order():
+    # ditemukan di dump riwayat: "Sell Now" tanpa angka entry sama sekali
+    text = "US30 \n\nSell  Now\n\nTp.: 52260, 50100, 51940\nSl.: 52440\n\nRisk 1%"
+    signal = parse_entry_signal(text, message_id=1001)
+    assert signal is not None
+    assert signal.action == "SELL"
+    assert signal.entry is None
+    assert signal.entry_range is None
+    assert signal.sl == 52440.0
+    assert signal.tp == [52260.0, 50100.0, 51940.0]
+
+
+def test_entry_at_symbol_connector_with_now_and_level():
+    # "Sell @ Now 52080" — '@' sebagai penghubung baru
+    text = "US30 \n\nSell @ Now 52080\n\nTp.:  51950, 51850,\nsl.: 52105\n\nRisk 1%"
+    signal = parse_entry_signal(text, message_id=1002)
+    assert signal is not None
+    assert signal.action == "SELL"
+    assert signal.entry == 52080.0
+    assert signal.tp == [51950.0, 51850.0]
+
+
+def test_entry_at_symbol_connector_now_while_below_range():
+    # "Sell @ Now While Below X" — kombinasi @ + now + while + below
+    text = "GOLD  \n\nSell @ Now While Below 4060\n\nTp.:  4048, 4043, 4018\nsl.: 4063\n\nRisk 1%"
+    signal = parse_entry_signal(text, message_id=1003)
+    assert signal is not None
+    assert signal.action == "SELL"
+    assert signal.entry == 4060.0
+    assert signal.entry_range is None
+
+
+def test_entry_at_symbol_alone_no_now_no_below():
+    # "Sell @ 7385" — cuma '@' langsung diikuti angka
+    text = "SPX\n\nSell @ 7385\n\nTarget 7367 - 7342\nsl.: 7387\n\nrisk 1%"
+    signal = parse_entry_signal(text, message_id=1004)
+    assert signal is not None
+    assert signal.action == "SELL"
+    assert signal.entry == 7385.0
+    assert signal.tp == [7367.0, 7342.0]
