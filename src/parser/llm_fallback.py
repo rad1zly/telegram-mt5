@@ -28,9 +28,17 @@ SIGNAL_TOOL = {
         "name": "extract_signal",
         "description": (
             "Ekstrak detail order trading dari teks signal. Panggil tool ini "
-            "HANYA jika teks jelas berisi instruksi buka posisi (arah, simbol, "
-            "stop loss). Kalau teks ambigu, cuma commentary, atau bukan signal "
-            "entry sama sekali — JANGAN panggil tool apa pun."
+            "HANYA jika teks berisi INSTRUKSI KONKRET buka posisi (arah + level "
+            "entry + stop loss yang jelas), bahkan kalau instruksi itu dibungkus "
+            "dalam paragraf analisa dengan judul dekoratif (mis. 'GOLD | Bullish "
+            "Setup', 'GOLD | Bearish Momentum'). Cari kalimat yang berbentuk "
+            "arahan langsung ('Buy Above X', 'Sell Below X', kadang didahului "
+            "label seperti 'So.:'), BUKAN kalimat penalaran hipotetis semata "
+            "('as long as price remains below X, expected to move toward Y' "
+            "TANPA arahan buka posisi eksplisit = itu cuma outlook, jangan "
+            "panggil tool). Kalau teks ambigu atau tidak ada arahan konkret — "
+            "JANGAN panggil tool apa pun, biar diteruskan sebagai notifikasi "
+            "manual, bukan ditebak."
         ),
         "parameters": {
             "type": "object",
@@ -46,7 +54,15 @@ SIGNAL_TOOL = {
                 "entry": {"type": "number", "description": "Harga entry tunggal. Kosongkan jika entry berupa rentang."},
                 "entry_range_low": {"type": "number"},
                 "entry_range_high": {"type": "number"},
-                "sl": {"type": "number", "description": "Stop loss — wajib ada."},
+                "sl": {
+                    "type": "number",
+                    "description": (
+                        "Stop loss — wajib ada. Kalau SL ditulis sebagai kondisi candle-close "
+                        "(mis. 'stop loss 4340 or 15min close below 4341'), pakai ANGKA HARGA yang "
+                        "disebut (4341) sebagai SL — ini penyederhanaan yang disengaja karena bot "
+                        "tidak memantau candle secara live, jadi dipakai sebagai harga stop tetap."
+                    ),
+                },
                 "tp": {"type": "array", "items": {"type": "number"}, "description": "Daftar take profit."},
             },
             "required": ["action", "symbol", "sl"],
@@ -94,7 +110,14 @@ FOLLOWUP_TOOL = {
 
 SIGNAL_SYSTEM_PROMPT = (
     "Kamu mengekstrak signal trading (forex/gold/index) dari pesan channel "
-    "Telegram. Jangan berhalusinasi angka yang tidak ada di teks."
+    "Telegram. Channel ini kadang menulis signal dalam format baku (simbol "
+    "polos di baris pertama, lalu Buy/Sell + level, Tp:, Sl:), dan kadang "
+    "dalam paragraf analisa berjudul dekoratif ('Bullish Setup', 'Bearish "
+    "Momentum', 'Bullish Continuation') yang isinya BISA murni outlook/opini "
+    "TANPA instruksi buka posisi, ATAU bisa juga menyisipkan instruksi "
+    "konkret di tengah paragraf. Bedakan keduanya dari ada-tidaknya arahan "
+    "eksplisit (arah + level entry + SL yang jelas), bukan dari judulnya. "
+    "Jangan berhalusinasi angka yang tidak ada di teks."
 )
 FOLLOWUP_SYSTEM_PROMPT = (
     "Kamu mengklasifikasikan pesan susulan trading dari channel Telegram "
