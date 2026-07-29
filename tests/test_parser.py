@@ -180,3 +180,51 @@ def test_entry_at_symbol_alone_no_now_no_below():
     assert signal.action == "SELL"
     assert signal.entry == 7385.0
     assert signal.tp == [7367.0, 7342.0]
+
+
+def test_entry_tp_label_typo_to_instead_of_tp():
+    # "To.:" — typo channel untuk "Tp.:"
+    text = "SPX500 \n\nSell @ now while below 7498\n\nTo.: 7481, 7461, 7442\nSl.: 7504\n\nRisk 1%"
+    signal = parse_entry_signal(text, message_id=1005)
+    assert signal is not None
+    assert signal.tp == [7481.0, 7461.0, 7442.0]
+
+
+def test_tp_label_to_does_not_false_match_total_or_today():
+    # "Total Trades: 16" / "Today is a holiday" tidak boleh dianggap baris TP
+    text = "GOLD\n\nSell Below 4033\n\nToday is a holiday\nTotal Trades: 16\nTp.: 4022, 4015\nsl.: 4036"
+    signal = parse_entry_signal(text, message_id=1006)
+    assert signal is not None
+    assert signal.tp == [4022.0, 4015.0]
+
+
+def test_entry_symbol_with_parenthetical_descriptor():
+    # "US30 (Dow Jones)" — simbol dengan keterangan dalam kurung di baris yang sama
+    text = "US30 (Dow Jones)\n\nSell @ Now \n\nTp.: 52220, 52120, 51950\nsl.: 52385\n\nRisk 1%"
+    signal = parse_entry_signal(text, message_id=1007)
+    assert signal is not None
+    assert signal.symbol == "US30"
+    assert signal.entry is None  # "Sell @ Now" tanpa angka -> market order
+
+
+def test_entry_symbol_line_with_trailing_empty_pipe():
+    # "GOLD | " — pipe nyasar tanpa isi, bukan header dekoratif sungguhan
+    text = "GOLD | \n\nsell Below 4033\n\ntarget 4022, 4015\nsl.: 4036\n\nrisk 1%"
+    signal = parse_entry_signal(text, message_id=1008)
+    assert signal is not None
+    assert signal.symbol == "GOLD"
+
+
+def test_entry_symbol_line_with_real_decoration_still_rejected():
+    # "GOLD | Bullish Setup" — dekorasi SUNGGUHAN, tetap ditolak regex
+    # (diserahkan ke LLM fallback, bukan ditebak)
+    text = "GOLD | Bullish Setup\n\nBuy Above 4342\nTarget 4355 - 4362\nstop loss 4340"
+    signal = parse_entry_signal(text, message_id=1009)
+    assert signal is None
+
+
+def test_followup_header_with_arbitrary_word_before_update():
+    # "Final Update" / "Trade Update" — bukan cuma "Live"/"New"
+    for header in ["GOLD | Final Update", "USNAS100 | Trade Update"]:
+        followup = parse_followup_regex(f"{header}\n\nSome commentary here", message_id=1010, reply_to_msg_id=None)
+        assert followup is not None, f"gagal untuk header: {header}"

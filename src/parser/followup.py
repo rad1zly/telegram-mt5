@@ -28,7 +28,8 @@ LIVE_UPDATE_HEADER_RE = re.compile(
     r"^\s*([A-Za-z0-9]+)"                    # simbol pertama
     r"(?:\s*&\s*[A-Za-z0-9]+)?"              # simbol kedua opsional ("SYM1 & SYM2 | ..."), diabaikan untuk sekarang
     r"\s*[-|]?\s*"                            # separator: '|', '-', atau cuma spasi ("GOLD LIVE UPDATE")
-    r"(?:live\s+|new\s+)?"                    # kata sifat opsional sebelum "update"
+    r"(?:\w+\s+)?"                             # kata sifat opsional sebelum "update" — bebas
+                                                # (diamati: "Live", "New", "Final", "Trade", dll)
     r"update\b",
     re.IGNORECASE,
 )

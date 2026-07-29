@@ -48,7 +48,9 @@ DIRECTION_RE = re.compile(
 # ambigu (bisa muncul di kalimat commentary biasa).
 MARKET_DIRECTION_RE = re.compile(r"\b(buy|sell)\b\s*(?:@\s*)?now\b", re.IGNORECASE)
 
-TP_LINE_RE = re.compile(r"^\s*(?:target|tp)[.,:]*\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+# \b setelah alternasi wajib — tanpa itu "to" bisa salah cocok dengan awal
+# kata "Total"/"Today"/"Touched" dll.
+TP_LINE_RE = re.compile(r"^\s*(?:target|tp|to)\b[.,:]*\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 SL_LINE_RE = re.compile(rf"^\s*sl[.,:]*\s*({_NUM})", re.IGNORECASE | re.MULTILINE)
 
 
@@ -83,14 +85,26 @@ def parse_entry_signal(text: str, message_id: int) -> Optional[Signal]:
         return None
 
     first_line = lines[0]
-    # "Live Update" / follow-up messages punya '|' di header atau kata "update" —
-    # bukan entry baru, tolak di sini (ditangani followup.py).
-    if "|" in first_line or "update" in first_line.lower():
+    # Pesan follow-up ("Live Update"/"Update") ditolak di sini (ditangani
+    # followup.py), independen dari struktur "|" di bawah.
+    if "update" in first_line.lower():
         return None
 
-    if not SYMBOL_RE.match(first_line):
+    # "|" di header BELUM TENTU berarti dekorasi — kadang cuma nyasar tanpa
+    # isi ("GOLD | "). Simbol dianggap valid selama TIDAK ADA teks berarti
+    # setelah "|" pertama; kalau ada (mis. "GOLD | Bullish Setup"), itu
+    # header dekoratif -> serahkan ke LLM fallback, jangan ditebak regex.
+    header_parts = first_line.split("|")
+    symbol_candidate = header_parts[0].strip()
+    if any(part.strip() for part in header_parts[1:]):
         return None
-    symbol = first_line.upper()
+
+    # Buang keterangan dalam kurung di baris simbol, mis. "US30 (Dow Jones)".
+    symbol_candidate = re.sub(r"\s*\([^)]*\)\s*$", "", symbol_candidate).strip()
+
+    if not SYMBOL_RE.match(symbol_candidate):
+        return None
+    symbol = symbol_candidate.upper()
 
     entry_low = None
     entry_high = None
