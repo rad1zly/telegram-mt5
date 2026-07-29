@@ -63,6 +63,43 @@ def test_calculate_lot_rejects_invalid_broker_tick_info():
     assert not result.ok
 
 
+def test_calculate_lot_rejects_sl_distance_below_minimum():
+    # skenario nyata: channel salah ketik SL (mis. entry 5017 tapi SL 2022,
+    # jarak 2995) -- kasus ini juga tertolak lewat volume_min, tapi kasus
+    # SL KETERLALU DEKAT (bukan jauh) butuh guard sendiri
+    result = calculate_lot(
+        entry=4342.0, sl=4341.0,  # jarak cuma 1.0
+        tick_size=0.01, tick_value=1.0,
+        volume_step=0.01, volume_min=0.01, volume_max=100.0,
+        risk_usd=50.0, max_lot_cap=5.0,
+        min_sl_distance=2.0,  # minimum wajar utk XAUUSD, mis.
+    )
+    assert not result.ok
+    assert "minimum wajar" in result.error
+
+
+def test_calculate_lot_allows_sl_distance_at_or_above_minimum():
+    result = calculate_lot(
+        entry=4342.0, sl=4338.0,  # jarak 4.0, >= minimum
+        tick_size=0.01, tick_value=1.0,
+        volume_step=0.01, volume_min=0.01, volume_max=100.0,
+        risk_usd=50.0, max_lot_cap=5.0,
+        min_sl_distance=2.0,
+    )
+    assert result.ok
+
+
+def test_calculate_lot_min_sl_distance_disabled_by_default():
+    # min_sl_distance=0.0 (default) -> tidak ada guard, jarak sekecil apapun lolos
+    result = calculate_lot(
+        entry=4342.0, sl=4341.9,
+        tick_size=0.01, tick_value=1.0,
+        volume_step=0.01, volume_min=0.01, volume_max=100.0,
+        risk_usd=50.0, max_lot_cap=5.0,
+    )
+    assert result.ok
+
+
 def test_partial_close_normal_case():
     result = calculate_partial_close_volume(
         position_lot=0.2, percent=50, volume_step=0.01, volume_min=0.01,

@@ -226,3 +226,42 @@ def test_price_deviation_override_absent_falls_back_to_global(monkeypatch):
     )
 
     assert captured["max_deviation_pips"] == 15.0
+
+
+def test_min_sl_distance_override_rejects_too_tight_sl(monkeypatch):
+    # entry-sl cuma jarak 1.0, override XAUUSD minta minimum 2.0 -> ditolak
+    signal = Signal(message_id=11, action="BUY", symbol="GOLD", entry=4342.0, sl=4341.0, tp=[4360.0])
+    resolver = SymbolResolver(ALIASES)
+
+    monkeypatch.setattr(mt5_client, "get_symbol_info", lambda symbol: _fake_symbol_info())
+    monkeypatch.setattr(mt5_client, "get_current_price", lambda symbol, direction: 4342.0)
+
+    result = executor.execute_signal(
+        signal=signal, resolver=resolver, broker_symbols=["XAUUSD"],
+        risk_usd=50.0, max_lot_cap=5.0,
+        min_sl_distance_overrides={"XAUUSD": 2.0},
+    )
+
+    assert not result.success
+    assert "Lot ditolak" in result.detail
+
+
+def test_min_sl_distance_override_absent_no_guard(monkeypatch):
+    # simbol tidak ada di override -> default 0.0, tidak ada guard sama sekali
+    signal = Signal(message_id=12, action="BUY", symbol="GOLD", entry=4342.0, sl=4341.9, tp=[4360.0])
+    resolver = SymbolResolver(ALIASES)
+
+    monkeypatch.setattr(mt5_client, "get_symbol_info", lambda symbol: _fake_symbol_info())
+    monkeypatch.setattr(mt5_client, "get_current_price", lambda symbol, direction: 4342.0)
+    monkeypatch.setattr(
+        mt5_client, "send_order",
+        lambda **kwargs: OrderResult(success=True, ticket=1, price=kwargs["entry"], kind="MARKET"),
+    )
+
+    result = executor.execute_signal(
+        signal=signal, resolver=resolver, broker_symbols=["XAUUSD"],
+        risk_usd=50.0, max_lot_cap=5.0,
+        min_sl_distance_overrides={"EURUSD": 0.0015},  # simbol lain
+    )
+
+    assert result.success

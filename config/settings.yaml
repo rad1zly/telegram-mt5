@@ -17,6 +17,26 @@ guards:
   price_deviation_overrides:
     XAUUSD: 100
     XAGUSD: 100
+  # Jarak SL minimum (satuan HARGA, bukan pip) per simbol canonical —
+  # diturunkan dari 50% median jarak SL riwayat asli channel ini (6716
+  # pesan). Menolak signal kalau SL kelewat dekat dari entry dibanding
+  # gaya trading normal channel -- biasanya berarti salah baca/salah ketik
+  # angka, bukan strategi scalping (channel ini memang scalping ketat di
+  # GOLD, makanya minimumnya juga kecil, BUKAN angka global sama rata).
+  min_sl_distance_overrides:
+    XAUUSD: 2.0
+    XAGUSD: 0.18
+    NAS100: 20.0
+    US30: 21.0
+    SP500: 2.5
+    GER40: 20.0
+    EURUSD: 0.0015
+    GBPUSD: 0.0015
+    USDJPY: 0.15
+    USDCAD: 0.0012
+    GBPJPY: 0.14
+    AUDUSD: 0.0012
+    USOIL: 0.23
 followup:
   move_sl_to_be: true
   partial_close_tp1: true
