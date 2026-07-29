@@ -69,6 +69,16 @@ def get_all_symbol_names() -> list[str]:
     return [s.name for s in _mt5().symbols_get()]
 
 
+def get_position(ticket: int):
+    """None kalau posisi sudah tidak ada di broker (sudah kena TP/SL atau
+    ditutup manual) — dipakai untuk sinkronisasi status lokal sebelum
+    menerapkan aksi follow-up ke posisi yang mungkin sudah closed."""
+    positions = _mt5().positions_get(ticket=ticket)
+    if not positions:
+        return None
+    return positions[0]
+
+
 def get_current_price(symbol: str, direction: str) -> Optional[float]:
     """Ask untuk BUY, bid untuk SELL — sisi harga yang relevan untuk
     order searah itu."""

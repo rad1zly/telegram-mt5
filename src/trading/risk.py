@@ -61,3 +61,45 @@ def calculate_lot(
         )
 
     return LotSizingResult(lot=lot, capped=capped)
+
+
+@dataclass
+class PartialCloseResult:
+    action: str  # "partial" | "full" | "reject"
+    volume: Optional[float] = None  # volume yang ditutup (None kalau action="full" -> tutup semua)
+    error: Optional[str] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.action in ("partial", "full")
+
+
+def calculate_partial_close_volume(
+    position_lot: float,
+    percent: float,
+    volume_step: float,
+    volume_min: float,
+) -> PartialCloseResult:
+    """Hitung volume partial-close, dibulatkan KE BAWAH ke volume_step
+    broker (bukan round() generik 2 desimal — index/beberapa broker punya
+    step 0.1 atau 1.0, bukan 0.01).
+
+    Kalau target volume di bawah volume_min (mis. lot 1.0 dengan step 1.0,
+    50% = 0.5 yang tidak valid), ATAU sisa setelah partial close di bawah
+    volume_min (posisi kecil, sisa jadi tidak valid) -> tutup PENUH saja,
+    bukan kirim angka yang pasti ditolak broker.
+    """
+    if position_lot <= 0:
+        return PartialCloseResult(action="reject", error="Lot posisi tidak valid (<=0)")
+
+    target = position_lot * (percent / 100)
+    close_volume = round(math.floor(target / volume_step) * volume_step, 8)
+
+    if close_volume < volume_min:
+        return PartialCloseResult(action="full")
+
+    remainder = round(position_lot - close_volume, 8)
+    if remainder < volume_min:
+        return PartialCloseResult(action="full")
+
+    return PartialCloseResult(action="partial", volume=close_volume)

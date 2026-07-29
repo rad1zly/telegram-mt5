@@ -99,6 +99,27 @@ class Database:
             cur = conn.execute("SELECT COUNT(*) FROM messages")
             return cur.fetchone()[0]
 
+    def get_message_text(self, channel: str, message_id: int) -> Optional[str]:
+        with closing(sqlite3.connect(self.path)) as conn:
+            cur = conn.execute(
+                "SELECT text FROM messages WHERE channel = ? AND message_id = ?",
+                (channel, message_id),
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+
+    def update_message_text(self, channel: str, message_id: int, new_text: str) -> bool:
+        """True kalau row memang ada dan ke-update. Dipakai saat event
+        MessageEdited — teks baru dipakai untuk re-klasifikasi (mis. pesan
+        entry yang di-edit channel jadi berisi info follow-up)."""
+        with closing(sqlite3.connect(self.path)) as conn:
+            cur = conn.execute(
+                "UPDATE messages SET text = ? WHERE channel = ? AND message_id = ?",
+                (new_text, channel, message_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
     def insert_edit(self, row: dict) -> None:
         with closing(sqlite3.connect(self.path)) as conn:
             conn.execute(
@@ -133,6 +154,34 @@ class Database:
             )
             row = cur.fetchone()
             return dict(row) if row else None
+
+    def get_position_by_signal_id(self, signal_id: int) -> Optional[dict]:
+        """Dipakai untuk cek: apakah message_id ini SUDAH pernah dieksekusi
+        jadi posisi? Kalau channel edit pesan yang sama setelah eksekusi
+        (mis. koreksi typo SL), kita TIDAK boleh eksekusi ulang otomatis
+        hanya karena teks baru juga terlihat seperti entry."""
+        with closing(sqlite3.connect(self.path)) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                "SELECT * FROM positions WHERE signal_id = ? ORDER BY id DESC LIMIT 1",
+                (signal_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def get_open_positions_by_symbol(self, symbol: str, limit: int = 5) -> list:
+        """Sama seperti get_open_position_by_symbol tapi mengembalikan list
+        (bukan cuma satu). Dipakai untuk iterasi kalau posisi paling baru
+        ternyata sudah stale (closed di broker tapi belum ke-sync status
+        lokalnya), supaya bisa lanjut cek posisi berikutnya."""
+        with closing(sqlite3.connect(self.path)) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                "SELECT * FROM positions WHERE symbol = ? AND status = 'open' "
+                "ORDER BY opened_at DESC LIMIT ?",
+                (symbol, limit),
+            )
+            return [dict(row) for row in cur.fetchall()]
 
     def mark_be_moved(self, position_id: int) -> None:
         with closing(sqlite3.connect(self.path)) as conn:

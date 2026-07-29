@@ -113,6 +113,10 @@ def test_followup_applies_move_sl_be_and_partial_close(tmp_path, monkeypatch):
         "status": "open", "opened_at": "2026-07-28T09:00:00+00:00",
     })
 
+    # posisi masih hidup di broker (bukan stale)
+    monkeypatch.setattr(mt5_client, "get_position", lambda ticket: SimpleNamespace(ticket=ticket))
+    monkeypatch.setattr(mt5_client, "get_symbol_info", lambda s: _fake_symbol_info())
+
     modify_calls = []
     partial_calls = []
     monkeypatch.setattr(mt5_client, "modify_sl_tp", lambda ticket, symbol, sl=None, tp=None: (
@@ -130,11 +134,73 @@ def test_followup_applies_move_sl_be_and_partial_close(tmp_path, monkeypatch):
     assert len(modify_calls) == 1
     assert modify_calls[0] == (555, "US30", 48500.0)
     assert len(partial_calls) == 1
-    assert partial_calls[0] == (555, "US30", 0.1)  # 50% dari lot 0.2
+    assert partial_calls[0] == (555, "US30", 0.1)  # 50% dari lot 0.2, step 0.01
 
     position = ctx.db.get_open_position_by_symbol("US30")
     assert position["be_moved"] == 1
     assert position["tp1_hit"] == 1
+
+
+def test_followup_skips_stale_position_and_notifies(tmp_path, monkeypatch):
+    # posisi tercatat 'open' di DB lokal tapi sudah tidak ada di broker
+    # (kena TP/SL) -> harus disinkronkan ke closed, bukan dipaksa modifikasi
+    ctx = _make_ctx(tmp_path)
+    notified = []
+    monkeypatch.setattr(notifier, "send", lambda text: notified.append(text))
+
+    ctx.db.insert_position({
+        "signal_id": 10, "ticket": 555, "symbol": "US30", "lot": 0.2,
+        "open_price": 48500.0, "sl": 48560.0, "tp": 48420.0,
+        "status": "open", "opened_at": "2026-07-28T09:00:00+00:00",
+    })
+    monkeypatch.setattr(mt5_client, "get_position", lambda ticket: None)  # sudah tidak ada di broker
+
+    msg = _fake_msg(12, US30_LIVE_UPDATE_TEXT)
+    asyncio.run(main_mod.handle_new_message(ctx, "chan", msg))
+
+    assert any("tidak ada posisi terbuka" in n for n in notified)
+    assert ctx.db.get_open_position_by_symbol("US30") is None  # sudah disinkronkan ke closed
+
+
+def test_edited_message_after_execution_does_not_reexecute(tmp_path, monkeypatch):
+    ctx = _make_ctx(tmp_path)
+    notified = []
+    monkeypatch.setattr(notifier, "send", lambda text: notified.append(text))
+    monkeypatch.setattr(mt5_client, "get_symbol_info", lambda s: _fake_symbol_info())
+
+    execute_calls = []
+    monkeypatch.setattr(
+        main_mod, "execute_signal",
+        lambda **kw: (execute_calls.append(1), ExecutionResult(success=True, detail="ok", ticket=999, lot=0.1, price=4344.5))[1],
+    )
+
+    msg = _fake_msg(30, GOLD_ENTRY_TEXT)
+    asyncio.run(main_mod.handle_new_message(ctx, "chan", msg))
+    assert len(execute_calls) == 1  # eksekusi pertama, normal
+
+    # channel edit pesan yang SAMA (typo SL dikoreksi) -> teks beda tapi tetap entry
+    edited_msg = _fake_msg(30, "GOLD\n\nsell below 4344 - 4345\n\ntp.: 4333, 4323\nsl.: 4350")
+    asyncio.run(main_mod.handle_edited_message(ctx, "chan", edited_msg))
+
+    assert len(execute_calls) == 1  # TIDAK eksekusi kedua kalinya
+    assert any("DIEDIT channel SETELAH" in n for n in notified)
+
+
+def test_edited_message_not_previously_seen_is_processed_as_new(tmp_path, monkeypatch):
+    # bot baru start setelah edit terjadi -> message_id belum pernah tercatat
+    ctx = _make_ctx(tmp_path)
+    notified = []
+    monkeypatch.setattr(notifier, "send", lambda text: notified.append(text))
+    monkeypatch.setattr(mt5_client, "get_symbol_info", lambda s: _fake_symbol_info())
+    monkeypatch.setattr(
+        main_mod, "execute_signal",
+        lambda **kw: ExecutionResult(success=True, detail="ok", ticket=1, lot=0.1, price=4344.5),
+    )
+
+    msg = _fake_msg(31, GOLD_ENTRY_TEXT)
+    asyncio.run(main_mod.handle_edited_message(ctx, "chan", msg))
+
+    assert ctx.db.get_open_position_by_symbol("GOLD") is not None
 
 
 def test_max_trades_per_day_guard_skips_new_entry(tmp_path, monkeypatch):

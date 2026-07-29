@@ -6,21 +6,31 @@ WAJIB config/settings.yaml -> mode: demo, dan akun yang login di terminal
 MT5 WAJIB benar-benar demo (dicek dari account_info, bukan cuma config) —
 kalau tidak, proses berhenti sebelum sempat listen sama sekali.
 
-Alur per pesan baru:
+Alur per pesan baru (dan pesan yang di-EDIT — channel ini sering edit
+pesan lama untuk menambah update, bukan cuma kirim pesan baru):
   1. Dedup (SQLite, unique per message_id) — pesan yang sama diabaikan.
+     Untuk pesan yang di-edit: diproses ulang HANYA kalau teksnya benar-
+     benar berubah, dan kalau message_id itu SUDAH pernah dieksekusi jadi
+     posisi, tidak dieksekusi ulang otomatis (dianggap koreksi teks, bukan
+     sinyal baru) — cuma notifikasi ke user.
   2. Coba parse sebagai entry signal (regex, lalu fallback MiniMax kalau
      MINIMAX_API_KEY ada). Kalau berhasil -> resolve simbol, hitung lot
      dari risiko tetap, kirim order, simpan posisi, notifikasi.
   3. Kalau bukan entry, coba parse sebagai follow-up "Live Update" (regex,
-     lalu fallback MiniMax). Kalau ada kinds yang cocok (move_sl_be /
-     partial_close_tp1) DAN diaktifkan di config, terapkan ke posisi
-     terbuka yang match simbolnya. close_all tidak pernah dieksekusi
-     otomatis, cuma notifikasi (lihat plan).
+     lalu fallback MiniMax). Sebelum menerapkan aksi, posisi yang match
+     di-verifikasi ULANG ke broker (bukan cuma percaya status 'open' di
+     DB lokal — bisa stale kalau sudah kena TP/SL). Kalau ada kinds yang
+     cocok (move_sl_be / partial_close_tp1) DAN diaktifkan di config,
+     diterapkan; partial close dibulatkan ke volume_step broker (bukan
+     dibulatkan generik), dan kalau sisanya di bawah volume_min, tutup
+     penuh saja. close_all tidak pernah dieksekusi otomatis, cuma
+     notifikasi (lihat plan).
   4. Bukan keduanya -> diabaikan (banyak chatter non-signal di channel).
 
 Guard yang AKTIF: dedup, SL wajib ada, simbol harus ke-resolve jelas, lot
-harus lolos volume_min, max_trades_per_day. Guard yang BELUM ada (spread,
-deviasi harga live, daily_loss_cap) — lihat plan Fase 3/4, menyusul.
+harus lolos volume_min, max_trades_per_day, posisi diverifikasi ulang ke
+broker sebelum follow-up diterapkan. Guard yang BELUM ada (spread,
+daily_loss_cap) — lihat plan Fase 3/4, menyusul.
 """
 
 import asyncio
@@ -44,6 +54,7 @@ from src.tg import notifier
 from src.tg.listener import resolve_channel_entity
 from src.trading import mt5_client
 from src.trading.executor import execute_signal
+from src.trading.risk import calculate_partial_close_volume
 from src.trading.symbols import SymbolResolver
 
 load_dotenv(dotenv_path="config/.env")
@@ -117,6 +128,26 @@ async def handle_entry_signal(ctx: Context, signal, msg) -> None:
     notifier.send(f"✅ Signal #{msg.id} dieksekusi:\n{result.detail}")
 
 
+async def _find_live_position(ctx: Context, loop, symbol: str):
+    """Ambil posisi terbuka TERBARU untuk simbol ini yang MASIH BENAR-BENAR
+    ADA di broker. Status 'open' di DB lokal bisa stale (posisi sudah kena
+    TP/SL/ditutup manual tanpa kita tahu) — iterasi dari yang terbaru,
+    sinkronkan ke 'closed' kalau ternyata sudah tidak ada, lanjut ke
+    kandidat berikutnya."""
+    candidates = ctx.db.get_open_positions_by_symbol(symbol)
+    for candidate in candidates:
+        broker_position = await loop.run_in_executor(None, mt5_client.get_position, candidate["ticket"])
+        if broker_position is None:
+            ctx.db.close_position(candidate["id"], datetime.now(timezone.utc).isoformat())
+            log.info(
+                "Posisi #%s (%s) sudah tidak ada di broker — status lokal disinkronkan ke closed",
+                candidate["ticket"], symbol,
+            )
+            continue
+        return candidate
+    return None
+
+
 async def handle_followup(ctx: Context, followup, msg) -> None:
     if not followup.kinds:
         preview = followup.raw_text[:200].replace("\n", " | ")
@@ -127,12 +158,16 @@ async def handle_followup(ctx: Context, followup, msg) -> None:
         notifier.send(f"⚠️ Follow-up #{msg.id} tidak jelas simbolnya — dilewati, cek manual.")
         return
 
-    position = ctx.db.get_open_position_by_symbol(followup.symbol)
+    loop = asyncio.get_event_loop()
+
+    position = await _find_live_position(ctx, loop, followup.symbol)
     if position is None:
-        notifier.send(f"⚠️ Follow-up #{msg.id} ({followup.symbol}) — tidak ada posisi terbuka yang cocok, dilewati.")
+        notifier.send(
+            f"⚠️ Follow-up #{msg.id} ({followup.symbol}) — tidak ada posisi terbuka yang cocok "
+            f"(atau semua sudah closed di broker), dilewati."
+        )
         return
 
-    loop = asyncio.get_event_loop()
     resolved = ctx.resolver.resolve(followup.symbol, ctx.broker_symbols)
     if not resolved.ok:
         notifier.send(f"⚠️ Follow-up #{msg.id}: simbol {followup.symbol} tidak ke-resolve ({resolved.error})")
@@ -153,18 +188,36 @@ async def handle_followup(ctx: Context, followup, msg) -> None:
 
     if "partial_close_tp1" in followup.kinds and not position["tp1_hit"]:
         if ctx.settings["followup"]["partial_close_tp1"] and position["lot"]:
-            pct = ctx.settings["followup"]["partial_close_percent"] / 100
-            close_volume = round(position["lot"] * pct, 2)
-            if close_volume > 0:
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: mt5_client.partial_close(position["ticket"], broker_symbol, close_volume),
+            info = await loop.run_in_executor(None, mt5_client.get_symbol_info, broker_symbol)
+            if info is None:
+                notifier.send(f"⚠️ Tidak bisa ambil symbol_info untuk partial close {broker_symbol}")
+            else:
+                pc = calculate_partial_close_volume(
+                    position_lot=position["lot"],
+                    percent=ctx.settings["followup"]["partial_close_percent"],
+                    volume_step=info.volume_step,
+                    volume_min=info.volume_min,
                 )
-                if result.success:
-                    ctx.db.mark_tp1_hit(position["id"])
-                    notifier.send(f"✅ Partial close {close_volume} lot #{position['ticket']} ({followup.symbol})")
+                if not pc.ok:
+                    notifier.send(f"⚠️ Partial close #{position['ticket']} ditolak: {pc.error}")
                 else:
-                    notifier.send(f"⚠️ Gagal partial close #{position['ticket']}: {result.error}")
+                    close_volume = pc.volume if pc.action == "partial" else position["lot"]
+                    result = await loop.run_in_executor(
+                        None,
+                        lambda: mt5_client.partial_close(position["ticket"], broker_symbol, close_volume),
+                    )
+                    if result.success:
+                        ctx.db.mark_tp1_hit(position["id"])
+                        if pc.action == "full":
+                            ctx.db.close_position(position["id"], datetime.now(timezone.utc).isoformat())
+                            notifier.send(
+                                f"✅ Posisi #{position['ticket']} ({followup.symbol}) ditutup PENUH "
+                                f"({close_volume} lot) — sisa setelah partial di bawah volume_min broker"
+                            )
+                        else:
+                            notifier.send(f"✅ Partial close {close_volume} lot #{position['ticket']} ({followup.symbol})")
+                    else:
+                        notifier.send(f"⚠️ Gagal partial close #{position['ticket']}: {result.error}")
 
     if "close_all" in followup.kinds:
         notifier.send(
@@ -173,21 +226,7 @@ async def handle_followup(ctx: Context, followup, msg) -> None:
         )
 
 
-async def handle_new_message(ctx: Context, channel_label: str, msg) -> None:
-    text = msg.raw_text or ""
-    row = {
-        "message_id": msg.id,
-        "channel": channel_label,
-        "date_utc": msg.date.astimezone(timezone.utc).isoformat(),
-        "text": text,
-        "reply_to_msg_id": msg.reply_to_msg_id,
-        "raw_json": json.dumps(msg.to_dict(), default=str),
-        "received_at": datetime.now(timezone.utc).isoformat(),
-    }
-    if not ctx.db.insert_message(row):
-        log.debug("Pesan duplikat #%s diabaikan", msg.id)
-        return
-
+async def classify_and_act(ctx: Context, text: str, msg) -> None:
     signal = parse_entry_signal(text, message_id=msg.id)
     if signal is None and llm_available():
         signal = parse_signal_with_llm(text, message_id=msg.id)
@@ -205,6 +244,67 @@ async def handle_new_message(ctx: Context, channel_label: str, msg) -> None:
         return
 
     log.info("Pesan #%s bukan entry/follow-up yang dikenali — diabaikan", msg.id)
+
+
+def _message_row(channel_label: str, msg) -> dict:
+    return {
+        "message_id": msg.id,
+        "channel": channel_label,
+        "date_utc": msg.date.astimezone(timezone.utc).isoformat(),
+        "text": msg.raw_text or "",
+        "reply_to_msg_id": msg.reply_to_msg_id,
+        "raw_json": json.dumps(msg.to_dict(), default=str),
+        "received_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def handle_new_message(ctx: Context, channel_label: str, msg) -> None:
+    text = msg.raw_text or ""
+    if not ctx.db.insert_message(_message_row(channel_label, msg)):
+        log.debug("Pesan duplikat #%s diabaikan", msg.id)
+        return
+    await classify_and_act(ctx, text, msg)
+
+
+async def handle_edited_message(ctx: Context, channel_label: str, msg) -> None:
+    """Channel ini kadang meng-edit pesan lama untuk menambahkan update
+    (mis. entry signal di-edit jadi berisi 'TP1 hit') — kalau kita cuma
+    dengar NewMessage, semua edit ini terlewat sama sekali.
+
+    Guard penting: kalau message_id ini SUDAH pernah dieksekusi jadi
+    posisi, jangan eksekusi ulang otomatis walau teks barunya juga
+    terlihat seperti entry baru — bisa jadi cuma koreksi typo pada
+    signal yang sama, bukan sinyal baru. Serahkan ke manusia.
+    """
+    text = msg.raw_text or ""
+    previous_text = ctx.db.get_message_text(channel_label, msg.id)
+
+    if previous_text is None:
+        # Belum pernah tercatat (mis. bot baru start setelah edit terjadi)
+        # -> perlakukan seperti pesan baru.
+        if not ctx.db.insert_message(_message_row(channel_label, msg)):
+            return
+        await classify_and_act(ctx, text, msg)
+        return
+
+    if previous_text == text:
+        log.debug("Pesan #%s di-edit tapi teks tidak berubah — diabaikan", msg.id)
+        return
+
+    log.info("Pesan #%s di-edit, teks berubah — diproses ulang", msg.id)
+    ctx.db.update_message_text(channel_label, msg.id, text)
+
+    existing_position = ctx.db.get_position_by_signal_id(msg.id)
+    if existing_position is not None:
+        preview = text[:300].replace("\n", " | ")
+        notifier.send(
+            f"⚠️ Signal #{msg.id} ({existing_position['symbol']}) DIEDIT channel SETELAH "
+            f"dieksekusi (ticket #{existing_position['ticket']}).\nTeks baru: {preview}\n"
+            f"Tidak dieksekusi ulang otomatis — cek manual kalau perlu penyesuaian posisi."
+        )
+        return
+
+    await classify_and_act(ctx, text, msg)
 
 
 async def main():
@@ -268,6 +368,10 @@ async def main():
     @client.on(events.NewMessage(chats=entity))
     async def handler(event):
         await handle_new_message(ctx, str(channel), event.message)
+
+    @client.on(events.MessageEdited(chats=entity))
+    async def edit_handler(event):
+        await handle_edited_message(ctx, str(channel), event.message)
 
     log.info("Mendengarkan channel: %s", channel)
     try:
