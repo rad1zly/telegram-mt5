@@ -10,3 +10,6 @@ venv/
 
 # Data mentah dari channel signal (berbayar/private) — jangan pernah publik
 tests/fixtures/*.jsonl
+
+# Data harga historis untuk backtest — besar, tidak perlu ikut commit
+backtest/data/
