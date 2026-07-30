@@ -165,3 +165,74 @@ def test_run_applies_sl_plus_automatically_even_without_move_sl_be_text():
     assert trade.be_moved is True
     # SELL -> SL+ di BAWAH entry (mengunci profit), bukan exact breakeven
     assert trade.sl == trade.entry_price - 0.4
+
+
+def test_run_executes_close_all_when_enabled():
+    rows = [
+        {
+            "message_id": 1, "date_utc": T0.isoformat(),
+            "text": "GOLD\n\nsell below 4344 - 4345\n\ntp.: 4333, 4323\nsl.: 4348",
+            "reply_to_msg_id": None,
+        },
+        {
+            "message_id": 2, "date_utc": (T0 + timedelta(minutes=5)).isoformat(),
+            "text": "GOLD | Live Update\n\nHit Profit +50 pip.\n\nWe now prefer to close the position due to volatility.",
+            "reply_to_msg_id": None,
+        },
+    ]
+    series = _series([
+        (0, 4344.0, 4344.5, 4343.5, 4344.2),
+        (5, 4340.0, 4340.5, 4339.5, 4340.0),
+        (10, 4344.0, 4345.0, 4343.5, 4344.5),  # kalau close_all TIDAK jalan, ini akan lanjut ke SL/TP
+    ])
+
+    resolver = SymbolResolver(ALIASES)
+    config = BacktestConfig(
+        risk_usd=50.0, max_lot_cap=5.0, max_price_deviation_pips=100.0,
+        price_deviation_overrides={"XAUUSD": 100.0},
+        min_sl_distance_overrides={},
+        close_all_enabled=True,
+    )
+    trades, skipped = run(
+        signal_rows=rows, resolver=resolver, broker_symbols=["XAUUSD+"],
+        price_series={"XAUUSD": series}, symbol_specs={"XAUUSD": _spec()},
+        config=config,
+    )
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.exit_reason == "close_all"
+    assert trade.exit_time == T0 + timedelta(minutes=5)  # closed persis saat follow-up, bukan nunggu SL/TP
+    assert trade.remaining_lot == 0.0
+
+
+def test_run_close_all_kind_ignored_when_disabled():
+    rows = [
+        {
+            "message_id": 1, "date_utc": T0.isoformat(),
+            "text": "GOLD\n\nsell below 4344 - 4345\n\ntp.: 4333, 4323\nsl.: 4348",
+            "reply_to_msg_id": None,
+        },
+        {
+            "message_id": 2, "date_utc": (T0 + timedelta(minutes=5)).isoformat(),
+            "text": "GOLD | Live Update\n\nHit Profit +50 pip.\n\nWe now prefer to close the position due to volatility.",
+            "reply_to_msg_id": None,
+        },
+    ]
+    series = _series([
+        (0, 4344.0, 4344.5, 4343.5, 4344.2),
+        (5, 4340.0, 4340.5, 4339.5, 4340.0),
+        (10, 4344.0, 4344.5, 4322.0, 4323.5),  # tembus TP terakhir (4323)
+    ])
+
+    resolver = SymbolResolver(ALIASES)
+    config = _config()  # close_all_enabled default False
+    trades, skipped = run(
+        signal_rows=rows, resolver=resolver, broker_symbols=["XAUUSD+"],
+        price_series={"XAUUSD": series}, symbol_specs={"XAUUSD": _spec()},
+        config=config,
+    )
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.exit_reason == "tp"  # tetap jalan sampai TP, close_all diabaikan

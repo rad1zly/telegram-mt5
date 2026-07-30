@@ -246,10 +246,30 @@ async def handle_followup(ctx: Context, followup, msg) -> None:
                         notifier.send(f"⚠️ Gagal partial close #{position['ticket']}: {result.error}")
 
     if "close_all" in followup.kinds:
-        notifier.send(
-            f"ℹ️ Channel minta CLOSE ALL untuk {followup.symbol} (#{position['ticket']}) — "
-            f"TIDAK dieksekusi otomatis (close_all sengaja off). Cek manual kalau perlu."
-        )
+        if ctx.settings["followup"]["close_all"]:
+            # Ambil volume LANGSUNG dari broker (bukan position["lot"] lokal,
+            # yang bisa stale kalau sudah ada partial close sebelumnya).
+            broker_position = await loop.run_in_executor(None, mt5_client.get_position, position["ticket"])
+            if broker_position is None:
+                notifier.send(
+                    f"ℹ️ Close-all #{position['ticket']} ({followup.symbol}): posisi sudah tidak ada di broker "
+                    f"(mungkin sudah closed lebih dulu)."
+                )
+            else:
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: mt5_client.partial_close(position["ticket"], broker_symbol, broker_position.volume),
+                )
+                if result.success:
+                    ctx.db.close_position(position["id"], datetime.now(timezone.utc).isoformat())
+                    notifier.send(f"✅ Posisi #{position['ticket']} ({followup.symbol}) ditutup PENUH (close_all)")
+                else:
+                    notifier.send(f"⚠️ Gagal close_all #{position['ticket']}: {result.error}")
+        else:
+            notifier.send(
+                f"ℹ️ Channel minta CLOSE ALL untuk {followup.symbol} (#{position['ticket']}) — "
+                f"TIDAK dieksekusi otomatis (close_all off di config). Cek manual kalau perlu."
+            )
 
 
 async def classify_and_act(ctx: Context, text: str, msg) -> None:

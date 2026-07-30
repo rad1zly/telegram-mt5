@@ -19,6 +19,7 @@ US30_LIVE_UPDATE_TEXT = (
 )
 CHATTER_TEXT = "selamat pagi semua, semoga profit hari ini"
 GOLD_PARTIAL_CLOSE_ONLY_TEXT = "GOLD | Live Update\n\nHit Target +30 pip. You may close partially to secure gains."
+GOLD_CLOSE_ALL_TEXT = "GOLD | Live Update\n\nHit Profit +110 pip.\n\nWe now prefer to close the position due to the current geopolitical situation."
 
 
 def _fake_msg(msg_id, text, reply_to_msg_id=None):
@@ -272,3 +273,60 @@ def test_sl_plus_applies_automatically_without_explicit_move_sl_be_text(tmp_path
 
     position = ctx.db.get_open_position_by_symbol("GOLD")
     assert position["be_moved"] == 1
+
+
+def test_close_all_executes_when_enabled_in_config(tmp_path, monkeypatch):
+    ctx = _make_ctx(tmp_path, followup={"close_all": True})
+    notified = []
+    monkeypatch.setattr(notifier, "send", lambda text: notified.append(text))
+
+    ctx.db.insert_position({
+        "signal_id": 10, "ticket": 888, "symbol": "GOLD", "direction": "BUY", "lot": 0.2,
+        "open_price": 4020.0, "sl": 4010.0, "tp": 4040.0,
+        "status": "open", "opened_at": "2026-07-28T09:00:00+00:00",
+    })
+    # get_position dipanggil 2x: sekali di _find_live_position (verifikasi hidup),
+    # sekali lagi di blok close_all (ambil volume terkini dari broker)
+    monkeypatch.setattr(mt5_client, "get_position", lambda ticket: SimpleNamespace(ticket=ticket, volume=0.2))
+    monkeypatch.setattr(mt5_client, "get_symbol_info", lambda s: _fake_symbol_info())
+
+    close_calls = []
+    monkeypatch.setattr(mt5_client, "partial_close", lambda ticket, symbol, volume: (
+        close_calls.append((ticket, symbol, volume)),
+        SimpleNamespace(success=True),
+    )[1])
+
+    msg = _fake_msg(13, GOLD_CLOSE_ALL_TEXT)
+    asyncio.run(main_mod.handle_new_message(ctx, "chan", msg))
+
+    assert len(close_calls) == 1
+    assert close_calls[0] == (888, "XAUUSD", 0.2)
+    assert any("ditutup PENUH" in n for n in notified)
+    assert ctx.db.get_open_position_by_symbol("GOLD") is None  # sudah closed di DB lokal
+
+
+def test_close_all_stays_notify_only_when_disabled_in_config(tmp_path, monkeypatch):
+    ctx = _make_ctx(tmp_path, followup={"close_all": False})
+    notified = []
+    monkeypatch.setattr(notifier, "send", lambda text: notified.append(text))
+
+    ctx.db.insert_position({
+        "signal_id": 10, "ticket": 889, "symbol": "GOLD", "direction": "BUY", "lot": 0.2,
+        "open_price": 4020.0, "sl": 4010.0, "tp": 4040.0,
+        "status": "open", "opened_at": "2026-07-28T09:00:00+00:00",
+    })
+    monkeypatch.setattr(mt5_client, "get_position", lambda ticket: SimpleNamespace(ticket=ticket, volume=0.2))
+    monkeypatch.setattr(mt5_client, "get_symbol_info", lambda s: _fake_symbol_info())
+
+    close_calls = []
+    monkeypatch.setattr(mt5_client, "partial_close", lambda ticket, symbol, volume: (
+        close_calls.append((ticket, symbol, volume)),
+        SimpleNamespace(success=True),
+    )[1])
+
+    msg = _fake_msg(14, GOLD_CLOSE_ALL_TEXT)
+    asyncio.run(main_mod.handle_new_message(ctx, "chan", msg))
+
+    assert close_calls == []  # TIDAK dieksekusi karena close_all off
+    assert any("TIDAK dieksekusi otomatis" in n for n in notified)
+    assert ctx.db.get_open_position_by_symbol("GOLD") is not None  # masih open

@@ -37,7 +37,7 @@ followup:
   move_sl_to_be: true
   partial_close_tp1: true
   partial_close_percent: 50
-  close_all: false
+  close_all: true  # channel sering kasih instruksi jelas "close the position" (368x di korpus, bukan cuma pilihan ambigu)
   # Begitu partial-close TP1 berhasil dieksekusi, SL OTOMATIS dipindah ke
   # breakeven + buffer ("SL+") -- aturan risk management sendiri, TIDAK
   # bergantung apakah channel juga bilang "pindah SL" di teksnya atau

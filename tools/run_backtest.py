@@ -96,6 +96,7 @@ def main():
         partial_close_percent=settings["followup"]["partial_close_percent"],
         move_sl_to_be_enabled=settings["followup"]["move_sl_to_be"],
         partial_close_enabled=settings["followup"]["partial_close_tp1"],
+        close_all_enabled=settings["followup"]["close_all"],
         sl_plus_buffer_overrides=settings["followup"].get("sl_plus_buffer_overrides") or {},
     )
 

@@ -31,6 +31,7 @@ class BacktestConfig:
     partial_close_percent: float = 50.0
     move_sl_to_be_enabled: bool = True
     partial_close_enabled: bool = True
+    close_all_enabled: bool = False
     sl_plus_buffer_overrides: dict = field(default_factory=dict)
     tp_index: int = -1  # -1 = TP terakhir/terjauh (perilaku executor.py live saat ini).
                          # 0 = TP pertama/terdekat -- dipakai untuk bandingkan strategi.
@@ -171,6 +172,15 @@ def run(
                     target_trade.exit_reason = "partial_close_full"
                 target_trade.tp1_hit = True
 
+        if "close_all" in followup.kinds and target_trade.is_open and config.close_all_enabled:
+            idx = series.index_at_or_after(event_time)
+            approx_price = series.candles[idx].open if idx is not None else target_trade.entry_price
+            target_trade.realized_pnl_usd += pnl_usd(target_trade, approx_price, target_trade.remaining_lot, spec)
+            target_trade.remaining_lot = 0.0
+            target_trade.exit_price = approx_price
+            target_trade.exit_time = event_time
+            target_trade.exit_reason = "close_all"
+
     for canonical, series in price_series.items():
         if not series.candles:
             continue
@@ -208,7 +218,7 @@ def build_report(trades: list, symbol_specs: dict, skipped: dict) -> BacktestRep
         stats["trades"] += 1
 
         pnl = t.realized_pnl_usd
-        if t.exit_reason in ("tp", "sl", "partial_close_full"):
+        if t.exit_reason in ("tp", "sl", "partial_close_full", "close_all"):
             if t.remaining_lot > 0:
                 pnl += pnl_usd(t, t.exit_price, t.remaining_lot, spec)
             closed_count += 1
