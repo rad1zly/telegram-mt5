@@ -79,12 +79,33 @@ followup:
     USOIL: 0.046
 # HANYA dipakai tools/run_backtest*.py -- BELUM memengaruhi live/executor.py.
 # Target TP tetap per simbol (bukan dari signal.tp channel, bukan relatif ke
-# SL trade) -- diturunkan dari persentil ke-40 distribusi "gerakan terbaik
-# sebelum SL kena" secara historis per simbol. Terbukti lewat sweep sebagai
-# strategi TP PALING PROFITABLE dari semua yang sudah dicoba (TP channel
-# apa adanya, R-multiple, macam-macam persentil). Lihat backtest/runner.py:
-# BacktestConfig.tp_fixed_distance_overrides.
+# SL trade). Lihat backtest/runner.py: BacktestConfig.tp_fixed_distance_overrides.
+#
+# ASAL ANGKA: awalnya diturunkan sebagai persentil-40 distribusi "gerakan
+# terbaik sebelum SL kena" (MFE), TAPI perhitungan itu memakai data yang
+# waktunya belum dikoreksi (lihat server_utc_offset_hours di bawah). Setelah
+# koreksi, persentil-40 yang sebenarnya adalah XAUUSD 6.21 / NAS100 47.25 /
+# US30 44.15 / SP500 7.25 -- dan angka-angka itu justru menghasilkan P/L
+# LEBIH RENDAH ($6,966) daripada angka lama di bawah ini ($7,793).
+# Jadi angka di bawah DIPERTAHANKAN karena terbukti lebih baik secara
+# empiris, TAPI jangan lagi disebut "persentil-40" -- itu sekadar jarak
+# tetap hasil tuning yang kebetulan bagus.
+#
+# PENTING: dengan waktu yang sudah dikoreksi, TP CHANNEL APA ADANYA justru
+# menghasilkan total P/L TERTINGGI ($9,688 vs $7,793) -- tapi dengan win
+# rate jauh lebih rendah (45.5% vs 60.2%) dan drawdown jauh lebih dalam
+# (74.1% vs 43.1% pada modal $800). Pilihan antara keduanya adalah soal
+# toleransi risiko, bukan soal mana yang "benar".
 backtest:
+  # Zona waktu server broker (jam relatif UTC) untuk file M5/tick hasil
+  # export MT5. Timestamp di file itu WAKTU SERVER, bukan UTC -- sementara
+  # timestamp pesan Telegram UTC asli. Tanpa koreksi ini seluruh backtest
+  # bergeser dan hasilnya tidak ada artinya.
+  # Nilai 3.0 diukur EMPIRIS dari korpus (bukan diasumsikan) -- keempat
+  # simbol kompak menunjuk +3h, dan jam 00:00 di file kosong = 17:00 New
+  # York = rollover harian standar CFD indeks. Ukur ulang kalau ganti
+  # broker: .venv/bin/python tools/detect_server_timezone.py
+  server_utc_offset_hours: 3.0
   tp_fixed_distance_overrides:
     XAUUSD: 4.34
     NAS100: 40.38

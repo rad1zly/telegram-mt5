@@ -46,15 +46,25 @@ def _from_ns(ns: int) -> datetime:
 
 
 class TickSeries:
-    def __init__(self, times: np.ndarray, bids: np.ndarray, asks: np.ndarray):
-        # times: int64 nanodetik sejak epoch UTC, HARUS terurut ascending
+    def __init__(self, times: np.ndarray, bids: np.ndarray, asks: np.ndarray,
+                 server_utc_offset_hours: float = 0.0):
+        # times: int64 nanodetik sejak epoch, HARUS terurut ascending
         # (dijamin oleh from_csv via np.argsort, dan oleh pemanggil test).
+        #
+        # ZONA WAKTU: times disimpan APA ADANYA dalam waktu server broker
+        # (lihat docstring modul + price_data.py). Konversi ke UTC asli
+        # dilakukan saat QUERY (index_at_or_after menggeser waktu yang
+        # DICARI, time_at menggeser hasilnya balik) -- BUKAN dengan
+        # menggeser seluruh array, karena array-nya bisa ratusan juta
+        # elemen lewat memmap dan menggesernya akan memaksa seluruh isi
+        # file masuk RAM (justru hal yang dihindari from_binary).
         self.times = times
         self.bids = bids
         self.asks = asks
+        self._shift_ns = int(server_utc_offset_hours * 3600 * 1_000_000_000)
 
     @classmethod
-    def from_csv(cls, path: str) -> "TickSeries":
+    def from_csv(cls, path: str, server_utc_offset_hours: float = 0.0) -> "TickSeries":
         import pandas as pd
 
         with open(path) as f:
@@ -97,10 +107,11 @@ class TickSeries:
         asks = ask[valid].to_numpy(dtype="float64")
 
         order = np.argsort(times_ns, kind="stable")
-        return cls(times=times_ns[order], bids=bids[order], asks=asks[order])
+        return cls(times=times_ns[order], bids=bids[order], asks=asks[order],
+                   server_utc_offset_hours=server_utc_offset_hours)
 
     @classmethod
-    def from_binary(cls, prefix: str) -> "TickSeries":
+    def from_binary(cls, prefix: str, server_utc_offset_hours: float = 0.0) -> "TickSeries":
         """Baca file biner hasil tools/prepare_tick_binary.py LEWAT
         MEMORY-MAP (numpy.memmap) -- OS cuma nge-load bagian file yang
         BENAR-BENAR diakses ke RAM saat itu, bukan seluruh isi file
@@ -113,15 +124,19 @@ class TickSeries:
         times = np.memmap(prefix + ".times.bin", dtype="int64", mode="r")
         bids = np.memmap(prefix + ".bids.bin", dtype="float32", mode="r")
         asks = np.memmap(prefix + ".asks.bin", dtype="float32", mode="r")
-        return cls(times=times, bids=bids, asks=asks)
+        return cls(times=times, bids=bids, asks=asks,
+                   server_utc_offset_hours=server_utc_offset_hours)
 
     def index_at_or_after(self, dt: datetime) -> Optional[int]:
-        """Index tick pertama dengan time >= dt, atau None kalau dt
-        melewati akhir data ATAU dt sebelum data mulai sama sekali (lihat
-        alasan yang sama di price_data.py:index_at_or_after)."""
+        """Index tick pertama dengan time >= dt (dt dalam UTC ASLI), atau
+        None kalau dt melewati akhir data ATAU dt sebelum data mulai sama
+        sekali (lihat alasan yang sama di price_data.py:index_at_or_after).
+
+        dt digeser ke waktu server dulu sebelum dicari, karena self.times
+        disimpan apa adanya dalam waktu server (lihat __init__)."""
         if len(self.times) == 0:
             return None
-        ts = _to_ns(dt)
+        ts = _to_ns(dt) + self._shift_ns
         if ts < self.times[0]:
             return None
         idx = int(np.searchsorted(self.times, ts, side="left"))
@@ -130,7 +145,8 @@ class TickSeries:
         return idx
 
     def time_at(self, idx: int) -> datetime:
-        return _from_ns(self.times[idx])
+        """Waktu tick ke-idx dalam UTC ASLI (sudah dikoreksi dari waktu server)."""
+        return _from_ns(self.times[idx] - self._shift_ns)
 
     def __len__(self) -> int:
         return len(self.times)

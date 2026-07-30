@@ -96,14 +96,15 @@ def main():
     with open("config/settings.yaml") as f:
         settings = yaml.safe_load(f)
 
-    print("Memuat data harga...")
+    server_offset = (settings.get("backtest") or {}).get("server_utc_offset_hours", 0.0)
+    print(f"Memuat data harga... (waktu server broker = UTC{server_offset:+g}h, dikoreksi ke UTC asli)")
     price_series = {}
     for canonical, filename in PRICE_FILES.items():
         path = os.path.join(DATA_DIR, filename)
         if not os.path.exists(path):
             print(f"  [!] {path} tidak ada, {canonical} dilewati")
             continue
-        series = PriceSeries.from_csv(path)
+        series = PriceSeries.from_csv(path, server_utc_offset_hours=server_offset)
         price_series[canonical] = series
         print(f"  {canonical}: {len(series)} candle ({series.candles[0].time} - {series.candles[-1].time})")
 

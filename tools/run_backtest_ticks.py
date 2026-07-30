@@ -85,7 +85,8 @@ def main():
     with open("config/settings.yaml") as f:
         settings = yaml.safe_load(f)
 
-    print("Memuat data TICK...")
+    server_offset = (settings.get("backtest") or {}).get("server_utc_offset_hours", 0.0)
+    print(f"Memuat data TICK... (waktu server broker = UTC{server_offset:+g}h, dikoreksi ke UTC asli)")
     if not os.path.isdir(args.tick_dir):
         print(f"  [!] Folder {args.tick_dir} belum ada -- buat dulu dan taruh file tick di sana,")
         print("      atau arahkan --tick-dir ke folder yang benar. Lihat docstring modul ini.")
@@ -99,14 +100,14 @@ def main():
                 print(f"  [!] {path} tidak ada, {canonical} dilewati (butuh export manual dari MT5)")
                 continue
             print(f"  Memuat {canonical} dari CSV (seluruhnya ke RAM) -- bisa berat kalau filenya besar...")
-            series = TickSeries.from_csv(path)
+            series = TickSeries.from_csv(path, server_utc_offset_hours=server_offset)
         else:
             # bukan .csv -> anggap ini PREFIX hasil tools/prepare_tick_binary.py
             if not os.path.exists(path + ".times.bin"):
                 print(f"  [!] {path}.times.bin tidak ada, {canonical} dilewati "
                       f"(jalankan tools/prepare_tick_binary.py dulu, atau pakai nama file .csv)")
                 continue
-            series = TickSeries.from_binary(path)
+            series = TickSeries.from_binary(path, server_utc_offset_hours=server_offset)
         if len(series) == 0:
             print(f"  [!] {path} kosong/tidak terbaca, {canonical} dilewati")
             continue

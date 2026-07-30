@@ -5,11 +5,24 @@ separated, header <DATE> <TIME> <OPEN> <HIGH> <LOW> <CLOSE> <TICKVOL>
 Menyediakan lookup cepat "candle pertama pada/setelah waktu X" dan
 forward-walk dari titik itu — dipakai simulasi entry fill dan resolusi
 TP/SL di engine.py.
+
+PENTING soal ZONA WAKTU: timestamp di file export MT5 adalah WAKTU SERVER
+BROKER, BUKAN UTC. Mayoritas broker MT5 pakai GMT+2/GMT+3. Sementara
+timestamp pesan Telegram (date_utc di korpus sinyal) adalah UTC ASLI.
+Kalau keduanya diperlakukan sama tanpa koreksi, SELURUH backtest bergeser
+beberapa jam — sinyal dicocokkan ke candle yang salah, dan hasil TP/SL
+jadi tidak ada artinya.
+
+Offset yang benar diverifikasi EMPIRIS dari data (bukan diasumsikan):
+lihat backtest.server_utc_offset_hours di config/settings.yaml dan
+tools/detect_server_timezone.py yang mengukurnya dari korpus.
+from_csv() menerima offset itu dan mengonversi semua timestamp ke UTC
+ASLI saat load, jadi seluruh kode di hilir cukup bekerja dalam UTC.
 """
 
 from bisect import bisect_left
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 
@@ -30,7 +43,12 @@ class PriceSeries:
         self._times = [c.time for c in candles]
 
     @classmethod
-    def from_csv(cls, path: str) -> "PriceSeries":
+    def from_csv(cls, path: str, server_utc_offset_hours: float = 0.0) -> "PriceSeries":
+        """server_utc_offset_hours: zona waktu server broker relatif UTC
+        (mis. 3.0 untuk broker GMT+3). Timestamp di file DIKURANGI offset
+        ini supaya jadi UTC ASLI, sehingga bisa dibandingkan langsung
+        dengan date_utc pesan Telegram. Lihat docstring modul."""
+        shift = timedelta(hours=server_utc_offset_hours)
         candles = []
         with open(path) as f:
             header = f.readline()
@@ -44,6 +62,7 @@ class PriceSeries:
                     continue
                 date_str, time_str, o, h, low_, c = parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
                 dt = datetime.strptime(f"{date_str} {time_str}", "%Y.%m.%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                dt -= shift
                 candles.append(Candle(time=dt, open=float(o), high=float(h), low=float(low_), close=float(c)))
         return cls(candles)
 
