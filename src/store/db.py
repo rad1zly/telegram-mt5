@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS positions (
     signal_id INTEGER NOT NULL,
     ticket INTEGER,
     symbol TEXT,
+    direction TEXT,
     lot REAL,
     open_price REAL,
     sl REAL,
@@ -134,8 +135,8 @@ class Database:
         with closing(sqlite3.connect(self.path)) as conn:
             cur = conn.execute(
                 """INSERT INTO positions
-                   (signal_id, ticket, symbol, lot, open_price, sl, tp, status, opened_at)
-                   VALUES (:signal_id, :ticket, :symbol, :lot, :open_price, :sl, :tp, :status, :opened_at)""",
+                   (signal_id, ticket, symbol, direction, lot, open_price, sl, tp, status, opened_at)
+                   VALUES (:signal_id, :ticket, :symbol, :direction, :lot, :open_price, :sl, :tp, :status, :opened_at)""",
                 row,
             )
             conn.commit()

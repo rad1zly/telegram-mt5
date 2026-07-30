@@ -18,6 +18,7 @@ US30_LIVE_UPDATE_TEXT = (
     "and move the stop-loss to the entry."
 )
 CHATTER_TEXT = "selamat pagi semua, semoga profit hari ini"
+GOLD_PARTIAL_CLOSE_ONLY_TEXT = "GOLD | Live Update\n\nHit Target +30 pip. You may close partially to secure gains."
 
 
 def _fake_msg(msg_id, text, reply_to_msg_id=None):
@@ -36,7 +37,10 @@ def _make_ctx(tmp_path, **settings_overrides):
     resolver = SymbolResolver({"XAUUSD": ["GOLD", "XAUUSD"], "US30": ["US30"]})
     settings = {
         "risk": {"usd_per_trade": 50.0, "max_lot_cap": 5.0, "max_trades_per_day": 20},
-        "followup": {"move_sl_to_be": True, "partial_close_tp1": True, "partial_close_percent": 50, "close_all": False},
+        "followup": {
+            "move_sl_to_be": True, "partial_close_tp1": True, "partial_close_percent": 50, "close_all": False,
+            "sl_plus_buffer_overrides": {"US30": 4.2, "XAUUSD": 0.4},
+        },
         "guards": {"max_price_deviation_pips": 15.0, "max_spread_pips": 30.0},
     }
     for key, value in settings_overrides.items():
@@ -108,7 +112,7 @@ def test_followup_applies_move_sl_be_and_partial_close(tmp_path, monkeypatch):
 
     # posisi terbuka yang jadi target follow-up
     ctx.db.insert_position({
-        "signal_id": 10, "ticket": 555, "symbol": "US30", "lot": 0.2,
+        "signal_id": 10, "ticket": 555, "symbol": "US30", "direction": "SELL", "lot": 0.2,
         "open_price": 48500.0, "sl": 48560.0, "tp": 48420.0,
         "status": "open", "opened_at": "2026-07-28T09:00:00+00:00",
     })
@@ -131,8 +135,11 @@ def test_followup_applies_move_sl_be_and_partial_close(tmp_path, monkeypatch):
     msg = _fake_msg(11, US30_LIVE_UPDATE_TEXT)
     asyncio.run(main_mod.handle_new_message(ctx, "chan", msg))
 
-    assert len(modify_calls) == 1
+    # move_sl_be (exact breakeven) dulu, LALU SL+ otomatis (breakeven+buffer)
+    # meng-override lagi -- SL akhir harus SL+, bukan exact breakeven.
+    assert len(modify_calls) == 2
     assert modify_calls[0] == (555, "US30", 48500.0)
+    assert modify_calls[1] == (555, "US30", 48500.0 - 4.2)  # SELL -> SL+ di BAWAH entry
     assert len(partial_calls) == 1
     assert partial_calls[0] == (555, "US30", 0.1)  # 50% dari lot 0.2, step 0.01
 
@@ -149,7 +156,7 @@ def test_followup_skips_stale_position_and_notifies(tmp_path, monkeypatch):
     monkeypatch.setattr(notifier, "send", lambda text: notified.append(text))
 
     ctx.db.insert_position({
-        "signal_id": 10, "ticket": 555, "symbol": "US30", "lot": 0.2,
+        "signal_id": 10, "ticket": 555, "symbol": "US30", "direction": "SELL", "lot": 0.2,
         "open_price": 48500.0, "sl": 48560.0, "tp": 48420.0,
         "status": "open", "opened_at": "2026-07-28T09:00:00+00:00",
     })
@@ -217,7 +224,7 @@ def test_max_trades_per_day_guard_skips_new_entry(tmp_path, monkeypatch):
 
     # sudah ada 1 posisi dibuka hari ini
     ctx.db.insert_position({
-        "signal_id": 1, "ticket": 1, "symbol": "GOLD", "lot": 0.1,
+        "signal_id": 1, "ticket": 1, "symbol": "GOLD", "direction": "SELL", "lot": 0.1,
         "open_price": 4344.5, "sl": 4348.0, "tp": 4333.0,
         "status": "open", "opened_at": main_mod.today_start_iso(),
     })
@@ -227,3 +234,41 @@ def test_max_trades_per_day_guard_skips_new_entry(tmp_path, monkeypatch):
 
     assert execute_calls == []  # tidak dieksekusi karena sudah kena limit
     assert any("dilewati" in n for n in notified)
+
+
+def test_sl_plus_applies_automatically_without_explicit_move_sl_be_text(tmp_path, monkeypatch):
+    # Channel CUMA bilang "close partially" -- TIDAK menyebut "pindah SL"
+    # sama sekali. SL+ harus tetap jalan otomatis (aturan risk management
+    # kita sendiri, bukan menunggu instruksi channel).
+    ctx = _make_ctx(tmp_path)
+    notified = []
+    monkeypatch.setattr(notifier, "send", lambda text: notified.append(text))
+
+    ctx.db.insert_position({
+        "signal_id": 10, "ticket": 777, "symbol": "GOLD", "direction": "BUY", "lot": 0.2,
+        "open_price": 4020.0, "sl": 4010.0, "tp": 4040.0,
+        "status": "open", "opened_at": "2026-07-28T09:00:00+00:00",
+    })
+    monkeypatch.setattr(mt5_client, "get_position", lambda ticket: SimpleNamespace(ticket=ticket))
+    monkeypatch.setattr(mt5_client, "get_symbol_info", lambda s: _fake_symbol_info())
+
+    modify_calls = []
+    monkeypatch.setattr(mt5_client, "modify_sl_tp", lambda ticket, symbol, sl=None, tp=None: (
+        modify_calls.append((ticket, symbol, sl)),
+        SimpleNamespace(success=True),
+    )[1])
+    monkeypatch.setattr(
+        mt5_client, "partial_close",
+        lambda ticket, symbol, volume: SimpleNamespace(success=True),
+    )
+
+    msg = _fake_msg(12, GOLD_PARTIAL_CLOSE_ONLY_TEXT)
+    asyncio.run(main_mod.handle_new_message(ctx, "chan", msg))
+
+    # tidak ada move_sl_be di kinds, tapi SL+ tetap harus terpicu 1x
+    # (modify_sl_tp dipanggil dgn broker_symbol hasil resolve, "XAUUSD")
+    assert len(modify_calls) == 1
+    assert modify_calls[0] == (777, "XAUUSD", 4020.0 + 0.4)  # BUY -> SL+ di ATAS entry
+
+    position = ctx.db.get_open_position_by_symbol("GOLD")
+    assert position["be_moved"] == 1

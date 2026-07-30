@@ -31,6 +31,7 @@ class BacktestConfig:
     partial_close_percent: float = 50.0
     move_sl_to_be_enabled: bool = True
     partial_close_enabled: bool = True
+    sl_plus_buffer_overrides: dict = field(default_factory=dict)
     tp_index: int = -1  # -1 = TP terakhir/terjauh (perilaku executor.py live saat ini).
                          # 0 = TP pertama/terdekat -- dipakai untuk bandingkan strategi.
 
@@ -150,6 +151,18 @@ def run(
                 if pc.action == "partial":
                     target_trade.realized_pnl_usd += pnl_usd(target_trade, approx_price, pc.volume, spec)
                     target_trade.remaining_lot -= pc.volume
+
+                    # SL+ otomatis: begitu TP1/partial-close berhasil, SL dipindah ke
+                    # breakeven+buffer -- SAMA PERSIS dgn logika main.py live, tidak
+                    # bergantung apakah followup.kinds juga mengandung move_sl_be.
+                    buffer = config.sl_plus_buffer_overrides.get(canonical, 0.0)
+                    if buffer > 0:
+                        target_trade.sl = (
+                            target_trade.entry_price + buffer
+                            if target_trade.direction == "BUY"
+                            else target_trade.entry_price - buffer
+                        )
+                        target_trade.be_moved = True
                 else:
                     target_trade.realized_pnl_usd += pnl_usd(target_trade, approx_price, target_trade.remaining_lot, spec)
                     target_trade.remaining_lot = 0.0

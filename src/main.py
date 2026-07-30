@@ -119,6 +119,7 @@ async def handle_entry_signal(ctx: Context, signal, msg) -> None:
         "signal_id": msg.id,
         "ticket": result.ticket,
         "symbol": signal.symbol,
+        "direction": signal.action,
         "lot": result.lot,
         "open_price": result.price,
         "sl": signal.sl,
@@ -217,6 +218,30 @@ async def handle_followup(ctx: Context, followup, msg) -> None:
                             )
                         else:
                             notifier.send(f"✅ Partial close {close_volume} lot #{position['ticket']} ({followup.symbol})")
+                            # SL+ otomatis: begitu TP1/partial-close berhasil, SL dipindah
+                            # ke breakeven+buffer -- aturan risk management sendiri,
+                            # TIDAK bergantung apakah channel juga bilang "pindah SL".
+                            buffer = ctx.settings["followup"].get("sl_plus_buffer_overrides", {}).get(
+                                resolved.canonical, 0.0
+                            )
+                            if buffer > 0 and position["open_price"] is not None and position["direction"]:
+                                sl_plus = (
+                                    position["open_price"] + buffer
+                                    if position["direction"] == "BUY"
+                                    else position["open_price"] - buffer
+                                )
+                                sl_result = await loop.run_in_executor(
+                                    None,
+                                    lambda: mt5_client.modify_sl_tp(position["ticket"], broker_symbol, sl=sl_plus),
+                                )
+                                if sl_result.success:
+                                    ctx.db.mark_be_moved(position["id"])
+                                    notifier.send(
+                                        f"✅ SL posisi #{position['ticket']} ({followup.symbol}) dipindah ke "
+                                        f"SL+ ({sl_plus}) — kunci profit setelah partial close"
+                                    )
+                                else:
+                                    notifier.send(f"⚠️ Gagal pindah SL ke SL+ #{position['ticket']}: {sl_result.error}")
                     else:
                         notifier.send(f"⚠️ Gagal partial close #{position['ticket']}: {result.error}")
 

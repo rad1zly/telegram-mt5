@@ -1,56 +1,31 @@
-import json
 import sys
-from pathlib import Path
-
-import pytest
 
 sys.path.insert(0, ".")
 
 from src.parser.followup import parse_followup_regex  # noqa: E402
 from src.parser.patterns import parse_entry_signal  # noqa: E402
 
-FIXTURE_PATH = Path(__file__).parent / "fixtures" / "signals.jsonl"
 
-if not FIXTURE_PATH.exists():
-    pytest.skip(
-        "tests/fixtures/signals.jsonl tidak ada — file ini gitignored karena "
-        "berisi data channel signal privat/berbayar. Jalankan Fase 1 collector "
-        "dulu (tools/collect_signals.py) untuk menghasilkan korpus lokal.",
-        allow_module_level=True,
-    )
-
-
-def _load_fixture_rows() -> list[dict]:
-    rows = []
-    with open(FIXTURE_PATH) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
-
-
-def _row_by_message_id(rows: list[dict], message_id: int) -> dict:
-    for row in rows:
-        if row["message_id"] == message_id:
-            return row
-    raise KeyError(message_id)
-
-
-def test_fixture_has_expected_real_messages():
-    # Fixture bisa berupa 5 sample awal ATAU dump riwayat penuh (ribuan
-    # pesan) — yang penting sample message_id yang dites spesifik di bawah
-    # (3,4,5,6,7) memang ada di dalamnya.
-    rows = _load_fixture_rows()
-    assert len(rows) >= 5
-    ids_present = {row["message_id"] for row in rows}
-    assert {3, 4, 5, 6, 7}.issubset(ids_present)
+# Sample teks asli ini SENGAJA di-embed literal (bukan lookup by message_id
+# dari fixture) supaya test-nya tidak rapuh terhadap isi tests/fixtures/
+# signals.jsonl yang bisa berubah (mis. dibersihkan dari data channel lama).
+US30_ENTRY_TEXT = "US30\n\nSell now below 48500\n\nTarget 48420, 48300 , 48100\nSl.: 48560 \n\nRisk 1% ⚠️"
+GOLD_RANGE_ENTRY_TEXT = "GOLD \n\nsell below 4344 - 4345\n\ntp.: 4333, 4323\nsl.: 4348\n\nrisk 1%\nTimeframe 1h\nCurrent price 4344.8"
+USDJPY_ENTRY_TEXT = "USDJPY \n\nSell Below 156.600\n\ntp.: 156.00, 155.34, 154.45\nsl.: 156.80\n\nrisk 1%\ntimeframe 1h, 4h\nCurrent price 156.59"
+GOLD_AMBIGUOUS_FOLLOWUP_TEXT = (
+    "GOLD | Live Update \n\nHit Profit about +100 pip✅\n\nand still has a bearish correctional "
+    "toward 4323 while below 4346\n\na 15min above 4346 will be bullish momentum \nclose fully "
+    "position or Close partially and place your sl around 4349\n\ntimeframe 1h, 15min\ncurrent price 4333"
+)
+US30_CLEAR_FOLLOWUP_TEXT = (
+    "US30 | Live Update \n\nHit target +185 pip ✅\n\nIf the price breaks below 48,300 on a "
+    "15-minute candle close, it is likely to decline toward 48,100.\n\nYou may close partially "
+    "to secure gains and move the stop-loss to the entry.\n\nTimeframe 1h\ncurrent price  48315"
+)
 
 
 def test_entry_signal_us30_single_entry_multi_tp():
-    rows = _load_fixture_rows()
-    row = _row_by_message_id(rows, 3)
-    signal = parse_entry_signal(row["text"], message_id=3)
+    signal = parse_entry_signal(US30_ENTRY_TEXT, message_id=3)
 
     assert signal is not None
     assert signal.symbol == "US30"
@@ -62,9 +37,7 @@ def test_entry_signal_us30_single_entry_multi_tp():
 
 
 def test_entry_signal_gold_entry_range():
-    rows = _load_fixture_rows()
-    row = _row_by_message_id(rows, 4)
-    signal = parse_entry_signal(row["text"], message_id=4)
+    signal = parse_entry_signal(GOLD_RANGE_ENTRY_TEXT, message_id=4)
 
     assert signal is not None
     assert signal.symbol == "GOLD"
@@ -76,9 +49,7 @@ def test_entry_signal_gold_entry_range():
 
 
 def test_entry_signal_usdjpy_decimal_prices():
-    rows = _load_fixture_rows()
-    row = _row_by_message_id(rows, 5)
-    signal = parse_entry_signal(row["text"], message_id=5)
+    signal = parse_entry_signal(USDJPY_ENTRY_TEXT, message_id=5)
 
     assert signal is not None
     assert signal.symbol == "USDJPY"
@@ -90,26 +61,20 @@ def test_entry_signal_usdjpy_decimal_prices():
 
 def test_live_update_messages_rejected_by_entry_parser():
     # pesan follow-up ("| Live Update") tidak boleh dianggap entry baru
-    rows = _load_fixture_rows()
-    for message_id in (6, 7):
-        row = _row_by_message_id(rows, message_id)
-        assert parse_entry_signal(row["text"], message_id=message_id) is None
+    for text in (GOLD_AMBIGUOUS_FOLLOWUP_TEXT, US30_CLEAR_FOLLOWUP_TEXT):
+        assert parse_entry_signal(text, message_id=6) is None
 
 
 def test_entry_signals_rejected_by_followup_parser():
     # sebaliknya: entry signal biasa bukan follow-up
-    rows = _load_fixture_rows()
-    for message_id in (3, 4, 5):
-        row = _row_by_message_id(rows, message_id)
-        assert parse_followup_regex(row["text"], message_id=message_id, reply_to_msg_id=None) is None
+    for text in (US30_ENTRY_TEXT, GOLD_RANGE_ENTRY_TEXT, USDJPY_ENTRY_TEXT):
+        assert parse_followup_regex(text, message_id=3, reply_to_msg_id=None) is None
 
 
 def test_followup_gold_ambiguous_choice_is_info_only():
     # "close fully position or Close partially and place your sl around 4349"
     # -> pilihan (or), SL bukan ke entry -> tidak ada aksi otomatis yang dipicu
-    rows = _load_fixture_rows()
-    row = _row_by_message_id(rows, 6)
-    followup = parse_followup_regex(row["text"], message_id=6, reply_to_msg_id=None)
+    followup = parse_followup_regex(GOLD_AMBIGUOUS_FOLLOWUP_TEXT, message_id=6, reply_to_msg_id=None)
 
     assert followup is not None
     assert followup.symbol == "GOLD"
@@ -119,9 +84,7 @@ def test_followup_gold_ambiguous_choice_is_info_only():
 def test_followup_us30_clear_instructions_both_kinds_detected():
     # "You may close partially to secure gains and move the stop-loss to the entry."
     # -> instruksi tunggal (bukan pilihan "or"), dua aksi sekaligus terdeteksi
-    rows = _load_fixture_rows()
-    row = _row_by_message_id(rows, 7)
-    followup = parse_followup_regex(row["text"], message_id=7, reply_to_msg_id=None)
+    followup = parse_followup_regex(US30_CLEAR_FOLLOWUP_TEXT, message_id=7, reply_to_msg_id=None)
 
     assert followup is not None
     assert followup.symbol == "US30"

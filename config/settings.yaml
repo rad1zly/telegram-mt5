@@ -38,6 +38,25 @@ followup:
   partial_close_tp1: true
   partial_close_percent: 50
   close_all: false
+  # Begitu partial-close TP1 berhasil dieksekusi, SL OTOMATIS dipindah ke
+  # breakeven + buffer ("SL+") -- aturan risk management sendiri, TIDAK
+  # bergantung apakah channel juga bilang "pindah SL" di teksnya atau
+  # tidak. Buffer = 20% dari guards.min_sl_distance_overrides (otomatis
+  # menyesuaikan skala tiap instrumen, bukan angka global sama rata).
+  sl_plus_buffer_overrides:
+    XAUUSD: 0.4
+    XAGUSD: 0.036
+    NAS100: 4.0
+    US30: 4.2
+    SP500: 0.5
+    GER40: 4.0
+    EURUSD: 0.0003
+    GBPUSD: 0.0003
+    USDJPY: 0.03
+    USDCAD: 0.00024
+    GBPJPY: 0.028
+    AUDUSD: 0.00024
+    USOIL: 0.046
 symbols:
   aliases:
     XAUUSD:

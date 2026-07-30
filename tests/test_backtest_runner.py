@@ -122,3 +122,46 @@ def test_run_applies_followup_move_sl_be_and_partial_close():
     assert trade.remaining_lot < trade.lot  # sebagian sudah di-partial-close
     assert trade.exit_reason == "sl"  # SL (breakeven) kena di candle menit 10
     assert trade.exit_price == trade.entry_price
+
+
+def test_run_applies_sl_plus_automatically_even_without_move_sl_be_text():
+    # Channel CUMA bilang "close partially" -- TIDAK menyebut pindah SL sama
+    # sekali. SL+ (breakeven+buffer) harus tetap terpicu otomatis kalau
+    # sl_plus_buffer_overrides diisi di config.
+    rows = [
+        {
+            "message_id": 1, "date_utc": T0.isoformat(),
+            "text": "GOLD\n\nsell below 4344 - 4345\n\ntp.: 4333, 4323\nsl.: 4348",
+            "reply_to_msg_id": None,
+        },
+        {
+            "message_id": 2, "date_utc": (T0 + timedelta(minutes=5)).isoformat(),
+            "text": "GOLD | Live Update\n\nHit Target +10 pip. You may close partially to secure gains.",
+            "reply_to_msg_id": None,
+        },
+    ]
+
+    series = _series([
+        (0, 4344.0, 4344.5, 4343.5, 4344.2),
+        (5, 4340.0, 4340.5, 4339.5, 4340.0),
+    ])
+
+    resolver = SymbolResolver(ALIASES)
+    config = BacktestConfig(
+        risk_usd=50.0, max_lot_cap=5.0, max_price_deviation_pips=100.0,
+        price_deviation_overrides={"XAUUSD": 100.0},
+        min_sl_distance_overrides={},
+        sl_plus_buffer_overrides={"XAUUSD": 0.4},
+    )
+    trades, skipped = run(
+        signal_rows=rows, resolver=resolver, broker_symbols=["XAUUSD+"],
+        price_series={"XAUUSD": series}, symbol_specs={"XAUUSD": _spec()},
+        config=config,
+    )
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.tp1_hit is True
+    assert trade.be_moved is True
+    # SELL -> SL+ di BAWAH entry (mengunci profit), bukan exact breakeven
+    assert trade.sl == trade.entry_price - 0.4
