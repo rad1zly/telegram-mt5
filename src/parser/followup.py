@@ -39,8 +39,22 @@ MOVE_SL_BE_RE = re.compile(
     r"\b(?:the\s+)?(?:entry|breakeven|be)\b",
     re.IGNORECASE,
 )
-PARTIAL_CLOSE_RE = re.compile(r"\bclose\s+partial(?:ly)?\b", re.IGNORECASE)
-CLOSE_ALL_RE = re.compile(r"\bclose\s+(?:all|fully|full\s+position)\b", re.IGNORECASE)
+# Kata sisipan antara "close" dan target-nya, mis. "close THE POSITION
+# partially", "close IT fully", "close THIS TRADE" — ditemukan sangat umum
+# di korpus nyata, regex versi awal (cuma "close partial(ly)" persis
+# nempel) melewatkan puluhan instruksi close yang jelas.
+_CLOSE_FILLER = r"(?:the\s+position|this\s+trade|this\s+position|the\s+trade|it)\s+"
+
+PARTIAL_CLOSE_RE = re.compile(rf"\bclose\s+(?:{_CLOSE_FILLER})?partial(?:ly)?\b", re.IGNORECASE)
+
+CLOSE_ALL_RE = re.compile(
+    rf"\bclose\s+(?:{_CLOSE_FILLER})?(?:all|fully|full\s+position)\b"
+    # "close the position/this trade/it" TANPA embel-embel apa pun juga
+    # berarti tutup penuh (kalau maksudnya sebagian, penulis akan bilang
+    # "partially") — asal TIDAK diikuti "partial" (dicegah lookahead).
+    rf"|\bclose\s+(?:the\s+position|this\s+trade|this\s+position|the\s+trade|it)\b(?!\s+partial)",
+    re.IGNORECASE,
+)
 
 # "close fully position OR close partially" — pilihan, bukan instruksi tegas.
 # Kalau pola ini match, TIDAK ADA aksi close yang dipicu otomatis dari

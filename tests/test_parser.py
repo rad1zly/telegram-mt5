@@ -261,3 +261,41 @@ def test_buy_valid_direction_all_pass():
     assert signal is not None
     assert signal.tp == [4355.0, 4362.0, 4373.0]
     assert signal.sl == 4338.0
+
+
+def test_followup_close_position_fully_with_filler_words():
+    # "Close the position fully" -- kata sisipan "the position" antara
+    # "close" dan "fully" (bukan "close fully" langsung nempel)
+    text = "SPX500 | Update\n\nFinal Target Hit +480 Pip\n\nClose the position fully and secure your profits."
+    followup = parse_followup_regex(text, message_id=1020, reply_to_msg_id=None)
+    assert followup is not None
+    assert followup.kinds == ["close_all"]
+
+
+def test_followup_close_the_position_bare_means_close_all():
+    # "close the position" TANPA embel-embel apa pun -> berarti tutup penuh
+    text = "US30 | Live Update\n\nHit Profit +110 pip\n\nWe now prefer to close the position due to the current geopolitical situation."
+    followup = parse_followup_regex(text, message_id=1021, reply_to_msg_id=None)
+    assert followup is not None
+    assert followup.kinds == ["close_all"]
+
+
+def test_followup_close_the_position_partially_with_filler_words():
+    # "close the position partially" -- kata sisipan sebelum "partially"
+    text = "GOLD | Live Update\n\nHit Profit +70 Pip\n\nYou may close the position partially and move your stop loss to around 4061 to secure your profits."
+    followup = parse_followup_regex(text, message_id=1022, reply_to_msg_id=None)
+    assert followup is not None
+    assert followup.kinds == ["partial_close_tp1"]
+
+
+def test_followup_ambiguous_close_with_filler_words_still_suppressed():
+    # "close the position fully, or close it partially" -- filler + pilihan "or"
+    # -> tetap harus ditekan (kinds kosong), bukan malah ke-detect keduanya
+    text = (
+        "GOLD | Live Update\n\nHit Target +140 Pip\n\nDue to the high market volatility, "
+        "you may close the position fully, or close it partially and move your stop loss "
+        "to around 4092 to protect your profits."
+    )
+    followup = parse_followup_regex(text, message_id=1023, reply_to_msg_id=None)
+    assert followup is not None
+    assert followup.kinds == []
