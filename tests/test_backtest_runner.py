@@ -1,9 +1,11 @@
 import sys
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 sys.path.insert(0, ".")
 
-from backtest.engine import SymbolSpec  # noqa: E402
+from backtest.engine import SimulatedTrade, SymbolSpec  # noqa: E402
 from backtest.price_data import Candle, PriceSeries  # noqa: E402
 from backtest.runner import BacktestConfig, build_report, run  # noqa: E402
 from src.trading.symbols import SymbolResolver  # noqa: E402
@@ -68,6 +70,49 @@ def test_run_end_to_end_market_entry_hits_tp():
     assert report.closed_trades == 1
     assert report.wins == 1
     assert report.total_pnl_usd > 0
+
+
+def _closed_trade(pnl: float, exit_time: datetime, msg_id: int) -> SimulatedTrade:
+    t = SimulatedTrade(
+        signal_message_id=msg_id, canonical_symbol="XAUUSD", direction="SELL", lot=0.1,
+        entry_price=4344.0, entry_time=exit_time - timedelta(minutes=5), sl=4348.0, tp=4333.0, kind="MARKET",
+    )
+    t.exit_price = 4340.0
+    t.exit_time = exit_time
+    t.exit_reason = "tp" if pnl > 0 else "sl"
+    t.remaining_lot = 0.0  # pnl full sudah di realized_pnl_usd, tidak perlu hitung ulang lewat pnl_usd()
+    t.realized_pnl_usd = pnl
+    return t
+
+
+def test_build_report_computes_max_drawdown_consecutive_loss_and_profit_factor():
+    # Urutan KRONOLOGIS (exit_time): +100, -50, -30, -20, +200, -10
+    # equity kumulatif : 100, 50, 20, 0, 200, 190
+    # peak berjalan     : 100, 100, 100, 100, 200, 200
+    # drawdown per titik: 0,   50,  80,  100, 0,   10   -> max_dd = 100
+    # run loss beruntun terpanjang: -50,-30,-20 (3x) sebelum +200 me-reset
+    # profit factor: gross_profit=300 (100+200), gross_loss=110 (50+30+20+10) -> 300/110
+    pnls = [100.0, -50.0, -30.0, -20.0, 200.0, -10.0]
+    trades = [
+        _closed_trade(pnl, T0 + timedelta(minutes=i * 10), msg_id=i)
+        for i, pnl in enumerate(pnls)
+    ]
+    # sengaja diacak urutannya di list -- build_report harus sort sendiri pakai exit_time
+    shuffled = [trades[3], trades[0], trades[5], trades[1], trades[4], trades[2]]
+
+    report = build_report(shuffled, {"XAUUSD": _spec()}, skipped={})
+
+    assert report.max_drawdown_usd == pytest.approx(100.0)
+    assert report.max_consecutive_losses == 3
+    assert report.profit_factor == pytest.approx(300.0 / 110.0)
+
+
+def test_build_report_profit_factor_is_none_when_no_losses():
+    trades = [_closed_trade(50.0, T0, msg_id=1), _closed_trade(30.0, T0 + timedelta(minutes=5), msg_id=2)]
+    report = build_report(trades, {"XAUUSD": _spec()}, skipped={})
+    assert report.profit_factor is None
+    assert report.max_drawdown_usd == pytest.approx(0.0)
+    assert report.max_consecutive_losses == 0
 
 
 def test_run_skips_signal_when_symbol_not_covered():

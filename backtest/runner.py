@@ -320,8 +320,48 @@ class BacktestReport:
     losses: int
     win_rate: float
     total_pnl_usd: float
+    max_drawdown_usd: float
+    max_consecutive_losses: int
+    profit_factor: Optional[float]
     per_symbol: dict
     skipped: dict
+
+
+def _max_drawdown_usd(chronological_pnls: list) -> float:
+    """Penurunan TERBESAR dari puncak running-equity ke titik terendah
+    sesudahnya (dalam $), dihitung dari kurva P/L kumulatif dalam urutan
+    KRONOLOGIS exit (bukan urutan list trades apa adanya, karena trades
+    tidak selalu tersimpan berurutan waktu exit-nya)."""
+    peak = 0.0
+    equity = 0.0
+    max_dd = 0.0
+    for pnl in chronological_pnls:
+        equity += pnl
+        peak = max(peak, equity)
+        max_dd = max(max_dd, peak - equity)
+    return max_dd
+
+
+def _max_consecutive_losses(chronological_pnls: list) -> int:
+    longest = 0
+    current = 0
+    for pnl in chronological_pnls:
+        if pnl <= 0:
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return longest
+
+
+def _profit_factor(chronological_pnls: list) -> Optional[float]:
+    """gross profit / gross loss -- None kalau tidak ada trade rugi sama
+    sekali (rasio tidak terdefinisi, bukan berarti tak terhingga)."""
+    gross_profit = sum(p for p in chronological_pnls if p > 0)
+    gross_loss = -sum(p for p in chronological_pnls if p <= 0)
+    if gross_loss <= 0:
+        return None
+    return gross_profit / gross_loss
 
 
 def build_report(trades: list, symbol_specs: dict, skipped: dict) -> BacktestReport:
@@ -331,6 +371,7 @@ def build_report(trades: list, symbol_specs: dict, skipped: dict) -> BacktestRep
     closed_count = 0
     open_count = 0
     per_symbol: dict = {}
+    closed = []  # (exit_time, pnl) -- buat max DD / consecutive-loss / profit factor
 
     for t in trades:
         spec = symbol_specs[t.canonical_symbol]
@@ -348,6 +389,7 @@ def build_report(trades: list, symbol_specs: dict, skipped: dict) -> BacktestRep
             else:
                 losses += 1
                 stats["losses"] += 1
+            closed.append((t.exit_time, pnl))
         else:
             open_count += 1
 
@@ -356,12 +398,18 @@ def build_report(trades: list, symbol_specs: dict, skipped: dict) -> BacktestRep
 
     win_rate = (wins / closed_count * 100) if closed_count else 0.0
 
+    closed.sort(key=lambda pair: pair[0])
+    ordered_pnls = [pnl for _, pnl in closed]
+
     return BacktestReport(
         total_trades=len(trades),
         closed_trades=closed_count,
         still_open_trades=open_count,
         wins=wins, losses=losses, win_rate=win_rate,
         total_pnl_usd=total_pnl,
+        max_drawdown_usd=_max_drawdown_usd(ordered_pnls),
+        max_consecutive_losses=_max_consecutive_losses(ordered_pnls),
+        profit_factor=_profit_factor(ordered_pnls),
         per_symbol=per_symbol,
         skipped=skipped,
     )

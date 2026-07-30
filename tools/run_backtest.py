@@ -164,6 +164,10 @@ def main():
     print(f"Win / Loss              : {report.wins} / {report.losses}")
     print(f"Win rate                : {report.win_rate:.1f}%")
     print(f"Total P/L               : ${report.total_pnl_usd:,.2f}")
+    pf = f"{report.profit_factor:.2f}" if report.profit_factor is not None else "N/A (tidak ada loss)"
+    print(f"Profit factor           : {pf}")
+    print(f"Max drawdown            : ${report.max_drawdown_usd:,.2f}")
+    print(f"Max consecutive loss    : {report.max_consecutive_losses}")
     print()
     print("Dilewati:")
     for reason, count in report.skipped.items():
