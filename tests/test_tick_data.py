@@ -83,3 +83,26 @@ def test_index_at_or_after_returns_none_before_data_starts():
 def test_index_at_or_after_returns_none_past_data_end():
     series = _series_from_seconds([(0, 100.0, 100.1)])
     assert series.index_at_or_after(datetime(2026, 1, 1, tzinfo=timezone.utc)) is None
+
+
+def test_from_binary_reads_memmap_written_by_prepare_tick_binary(tmp_path):
+    # Simulasikan hasil tools/prepare_tick_binary.py: 3 file biner mentah
+    # (int64 times, float32 bids/asks) ditulis manual, lalu baca via
+    # TickSeries.from_binary() (numpy.memmap) -- harus hasilnya identik
+    # dgn kalau datanya di-load langsung ke RAM biasa.
+    prefix = str(tmp_path / "XAUUSD")
+    t0 = datetime(2025, 3, 3, 4, 15, 0, tzinfo=timezone.utc)
+    times = np.array([_to_ns(t0), _to_ns(t0) + 5_000_000_000], dtype="int64")
+    bids = np.array([4344.10, 4344.20], dtype="float32")
+    asks = np.array([4344.30, 4344.40], dtype="float32")
+    times.tofile(prefix + ".times.bin")
+    bids.tofile(prefix + ".bids.bin")
+    asks.tofile(prefix + ".asks.bin")
+
+    series = TickSeries.from_binary(prefix)
+
+    assert len(series) == 2
+    assert series.time_at(0) == t0
+    assert abs(series.bids[0] - 4344.10) < 1e-4
+    assert abs(series.asks[1] - 4344.40) < 1e-4
+    assert series.index_at_or_after(t0) == 0

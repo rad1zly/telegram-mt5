@@ -9,10 +9,17 @@ PENTING soal skala data: file tick riil (1-2 tahun, instrumen aktif) bisa
 berisi RATUSAN JUTA baris (puluhan GB) -- jauh lebih besar dari candle M5.
 Simpan sebagai list objek Python per-tick TIDAK PRAKTIS (overhead memori
 ~10x lipat lebih besar dari data mentahnya, dan parsing baris-per-baris
-pakai datetime.strptime bisa makan waktu berjam-jam). Makanya modul ini
-pakai pandas (parsing CSV di C, jauh lebih cepat) lalu simpan sbg array
-numpy (times sbg int64 nanodetik sejak epoch UTC, bid/ask sbg float64) --
-representasi paling ringkas yang masih bisa di-binary-search & divectorize.
+pakai datetime.strptime bisa makan waktu berjam-jam).
+
+Dua cara load, pilih sesuai RAM yang tersedia:
+- from_csv(path): pandas (parsing CSV di C, cepat) -> array numpy TAPI
+  SELURUHNYA resident di RAM. Cocok kalau RAM cukup besar (>= ukuran data
+  tick, biasanya perlu headroom 2-3x krn overhead parsing sementara).
+- from_binary(prefix): baca file biner hasil tools/prepare_tick_binary.py
+  (dikonversi bertahap dari CSV, bounded memory) LEWAT numpy.memmap -- OS
+  cuma nge-load bagian yang benar-benar diakses, bukan semuanya sekaligus.
+  WAJIB dipakai kalau data tick jauh lebih besar dari RAM (mis. data 15GB+
+  di PC dgn RAM 6GB) -- from_csv() akan gagal/sangat lambat di skala itu.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -91,6 +98,22 @@ class TickSeries:
 
         order = np.argsort(times_ns, kind="stable")
         return cls(times=times_ns[order], bids=bids[order], asks=asks[order])
+
+    @classmethod
+    def from_binary(cls, prefix: str) -> "TickSeries":
+        """Baca file biner hasil tools/prepare_tick_binary.py LEWAT
+        MEMORY-MAP (numpy.memmap) -- OS cuma nge-load bagian file yang
+        BENAR-BENAR diakses ke RAM saat itu, bukan seluruh isi file
+        sekaligus. Ini solusi utk data tick yang jauh lebih besar dari RAM
+        yang tersedia (mis. data 15GB+ di PC dgn RAM 6GB) -- from_csv()
+        MEMBUTUHKAN seluruh data resident di RAM, TIDAK cocok utk skala itu.
+
+        prefix: path tanpa akhiran, mis. 'backtest/data/ticks_bin/XAUUSD'
+        (harus ada <prefix>.times.bin, <prefix>.bids.bin, <prefix>.asks.bin)."""
+        times = np.memmap(prefix + ".times.bin", dtype="int64", mode="r")
+        bids = np.memmap(prefix + ".bids.bin", dtype="float32", mode="r")
+        asks = np.memmap(prefix + ".asks.bin", dtype="float32", mode="r")
+        return cls(times=times, bids=bids, asks=asks)
 
     def index_at_or_after(self, dt: datetime) -> Optional[int]:
         """Index tick pertama dengan time >= dt, atau None kalau dt

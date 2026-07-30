@@ -11,16 +11,23 @@ CARA SIAPKAN DATA TICK (di MT5, di PC yang sama dengan data ini):
   2. Pilih simbol (mis. DJ30.r), klik "Export Ticks" (bukan "Export Bars")
   3. Pilih rentang tanggal yang sama dengan data M5 yang sudah ada
      (cek backtest/data/<symbol>_M5.csv baris pertama utk tanggal mulainya)
-  4. Simpan sebagai backtest/data/ticks/<broker_symbol>_ticks.csv, ATAU
-     simpan di mana saja dan arahkan lewat --tick-dir / --<symbol>-ticks
-     (lihat contoh di atas) -- nama file BEBAS, tidak harus diganti manual.
+  4a. Kalau RAM PC cukup besar (file per simbol muat nyaman di RAM):
+      simpan sebagai backtest/data/ticks/<broker_symbol>_ticks.csv, ATAU
+      simpan di mana saja dan arahkan lewat --tick-dir / --<symbol>-ticks
+      (lihat contoh di atas) -- nama file BEBAS.
+  4b. Kalau RAM PC TERBATAS (data tick puluhan GB, RAM cuma beberapa GB):
+      convert dulu SEKALI pakai tools/prepare_tick_binary.py (proses
+      bertahap, hemat memori), lalu arahkan --<symbol>-ticks ke PREFIX
+      hasil convert itu (TANPA akhiran .csv) -- otomatis dibaca lewat
+      memory-map (numpy.memmap), OS cuma nge-load bagian yang benar-benar
+      dipakai ke RAM, bukan seluruh file. Lihat docstring tools/prepare_tick_binary.py.
 
 Kalau file tick utk suatu simbol tidak ada, simbol itu OTOMATIS dilewati
 (pakai simbol lain yang datanya sudah tersedia) -- tidak perlu keempatnya
 sekaligus untuk mulai coba.
 
 Sepenuhnya lokal, tidak butuh MT5/Telegram jalan -- cuma baca file yang
-sudah diexport manual.
+sudah diexport/dikonversi manual.
 """
 
 import argparse
@@ -83,10 +90,19 @@ def main():
     tick_series = {}
     for canonical, filename in tick_files.items():
         path = os.path.join(args.tick_dir, filename)
-        if not os.path.exists(path):
-            print(f"  [!] {path} tidak ada, {canonical} dilewati (butuh export manual dari MT5)")
-            continue
-        series = TickSeries.from_csv(path)
+        if filename.lower().endswith(".csv"):
+            if not os.path.exists(path):
+                print(f"  [!] {path} tidak ada, {canonical} dilewati (butuh export manual dari MT5)")
+                continue
+            print(f"  Memuat {canonical} dari CSV (seluruhnya ke RAM) -- bisa berat kalau filenya besar...")
+            series = TickSeries.from_csv(path)
+        else:
+            # bukan .csv -> anggap ini PREFIX hasil tools/prepare_tick_binary.py
+            if not os.path.exists(path + ".times.bin"):
+                print(f"  [!] {path}.times.bin tidak ada, {canonical} dilewati "
+                      f"(jalankan tools/prepare_tick_binary.py dulu, atau pakai nama file .csv)")
+                continue
+            series = TickSeries.from_binary(path)
         if len(series) == 0:
             print(f"  [!] {path} kosong/tidak terbaca, {canonical} dilewati")
             continue
