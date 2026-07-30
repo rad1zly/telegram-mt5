@@ -265,3 +265,36 @@ def test_symbol_and_direction_crammed_with_pipe():
     assert signal is not None
     assert signal.symbol == "GOLD"
     assert signal.entry == 4542.0
+
+
+def test_tp_typo_with_wrong_direction_is_filtered_out_not_kept():
+    # kasus nyata #4649: "Sell from 5077 ... Tp.: 50670, 5060, 5027" -- 50670
+    # jelas typo (kelebihan digit dari 5067), posisinya JAUH DI ATAS entry
+    # padahal utk SELL semua TP harus di BAWAH entry. Harus difilter, bukan dipakai.
+    text = "GOLD\n\nSell from 5077\n\nTp.: 50670, 5060, 5027\nSl.: 5081"
+    signal = parse_entry_signal(text, message_id=1016)
+    assert signal is not None
+    assert signal.tp == [5060.0, 5027.0]
+    assert 50670.0 not in signal.tp
+
+
+def test_all_tp_wrong_direction_rejects_whole_signal():
+    text = "GOLD\n\nBuy above 4342\n\nTarget 4300, 4310\nsl.: 4338"
+    # semua TP (4300, 4310) di BAWAH entry (4342), padahal BUY butuh TP di ATAS -> tolak semua
+    signal = parse_entry_signal(text, message_id=1017)
+    assert signal is None
+
+
+def test_sl_wrong_direction_rejects_whole_signal():
+    # SELL tapi SL di BAWAH entry (harusnya di ATAS) -> data tidak masuk akal, tolak
+    text = "GOLD\n\nSell below 4344\n\nTarget 4330, 4320\nsl.: 4340"
+    signal = parse_entry_signal(text, message_id=1018)
+    assert signal is None
+
+
+def test_buy_valid_direction_all_pass():
+    text = "GOLD\n\nBuy above 4342\n\nTarget 4355, 4362, 4373\nsl.: 4338"
+    signal = parse_entry_signal(text, message_id=1019)
+    assert signal is not None
+    assert signal.tp == [4355.0, 4362.0, 4373.0]
+    assert signal.sl == 4338.0

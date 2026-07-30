@@ -158,6 +158,25 @@ def parse_entry_signal(text: str, message_id: int) -> Optional[Signal]:
     if not tp:
         return None
 
+    # Validasi arah SL/TP relatif ke entry — channel kadang salah ketik
+    # angka (mis. kelebihan digit: "50670" padahal maksudnya "5067") yang
+    # bikin SL/TP ada di sisi yang matematis tidak masuk akal untuk arah
+    # tradenya. entry_low dipakai sebagai acuan (berlaku utk entry tunggal
+    # maupun rentang). Kalau tidak ada level entry sama sekali (market
+    # order polos "Buy/Sell Now"), validasi ini dilewati karena tidak ada
+    # angka acuan dari teks.
+    if entry_low is not None:
+        if action == "BUY":
+            if sl >= entry_low:
+                return None  # SL harus di BAWAH entry untuk BUY -- data tidak valid
+            tp = [t for t in tp if t > entry_low]
+        else:
+            if sl <= entry_low:
+                return None  # SL harus di ATAS entry untuk SELL -- data tidak valid
+            tp = [t for t in tp if t < entry_low]
+        if not tp:
+            return None
+
     if entry_high is not None:
         return Signal(
             message_id=message_id,
