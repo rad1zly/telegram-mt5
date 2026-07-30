@@ -325,6 +325,8 @@ class BacktestReport:
     profit_factor: Optional[float]
     max_balance_drawdown_pct: float
     max_equity_drawdown_pct: float
+    account_blown: bool
+    account_blown_at: Optional[datetime]
     per_symbol: dict
     skipped: dict
 
@@ -384,6 +386,18 @@ def _equity_curve_points(closed_trades: list, initial_deposit: float) -> list:
                 floating += pnl * min(max(frac, 0.0), 1.0)
         points.append((t, balance + floating))
     return points
+
+
+def _first_account_blown_at(equity_points: list) -> Optional[datetime]:
+    """Titik PERTAMA equity tembus <= 0 -- ini batas bawah/worst-case: MC
+    beneran di broker (stop-out) hampir pasti kejadian LEBIH AWAL dari
+    ini (broker mantau margin LEVEL, bukan nunggu equity persis nol),
+    jadi kalau ini kepicu, semua P/L SESUDAH titik ini di laporan tidak
+    realistis -- akun sudah tidak akan bisa lanjut trading sejauh itu."""
+    for t, equity in equity_points:
+        if equity <= 0:
+            return t
+    return None
 
 
 def _max_drawdown_pct(points: list, initial_deposit: float) -> float:
@@ -459,6 +473,7 @@ def build_report(trades: list, symbol_specs: dict, skipped: dict, initial_deposi
     ordered_pnls = [pnl for _, _, pnl in sorted(closed, key=lambda c: c[1])]
     balance_points = _balance_curve_points(closed, initial_deposit)
     equity_points = _equity_curve_points(closed, initial_deposit)
+    blown_at = _first_account_blown_at(equity_points)
 
     return BacktestReport(
         total_trades=len(trades),
@@ -471,6 +486,8 @@ def build_report(trades: list, symbol_specs: dict, skipped: dict, initial_deposi
         profit_factor=_profit_factor(ordered_pnls),
         max_balance_drawdown_pct=_max_drawdown_pct(balance_points, initial_deposit),
         max_equity_drawdown_pct=_max_drawdown_pct(equity_points, initial_deposit),
+        account_blown=blown_at is not None,
+        account_blown_at=blown_at,
         per_symbol=per_symbol,
         skipped=skipped,
     )

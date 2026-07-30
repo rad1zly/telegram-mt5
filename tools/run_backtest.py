@@ -163,6 +163,13 @@ def main():
     print("HASIL BACKTEST")
     print("=" * 50)
     print(f"Modal awal               : ${args.initial_deposit:,.2f}")
+    if report.account_blown:
+        print(
+            f"🚨 AKUN HABIS (equity <= $0) pada {report.account_blown_at} -- margin call/stop-out "
+            f"NYATA di broker hampir pasti kejadian LEBIH AWAL dari ini (broker mantau margin level, "
+            f"bukan nunggu equity persis nol). Semua P/L SESUDAH titik ini di laporan TIDAK REALISTIS "
+            f"-- modal ${args.initial_deposit:,.0f} tidak cukup buat strategi/risk ini sejauh itu."
+        )
     print(f"Total trade tereksekusi : {report.total_trades}")
     print(f"  - closed              : {report.closed_trades}")
     print(f"  - masih terbuka (EOD) : {report.still_open_trades}")

@@ -155,6 +155,25 @@ def test_build_report_balance_vs_equity_drawdown_pct_diverge_on_overlapping_trad
     assert report.max_equity_drawdown_pct == pytest.approx(43.75)
 
 
+def test_build_report_flags_account_blown_when_equity_hits_zero():
+    # Modal cuma $100, rugi -400 di trade pertama -> equity pasti negatif
+    # di suatu titik saat floating-nya berjalan (linear dari 0 ke -400).
+    trade = _closed_trade_at(T0, T0 + timedelta(minutes=100), -400.0, msg_id=1)
+    report = build_report([trade], {"XAUUSD": _spec()}, skipped={}, initial_deposit=100.0)
+
+    assert report.account_blown is True
+    assert report.account_blown_at is not None
+    assert T0 <= report.account_blown_at <= T0 + timedelta(minutes=100)
+
+
+def test_build_report_account_not_blown_when_equity_stays_positive():
+    trade = _closed_trade_at(T0, T0 + timedelta(minutes=10), -160.0, msg_id=1)
+    report = build_report([trade], {"XAUUSD": _spec()}, skipped={}, initial_deposit=800.0)
+
+    assert report.account_blown is False
+    assert report.account_blown_at is None
+
+
 def test_run_skips_signal_when_symbol_not_covered():
     rows = [{
         "message_id": 1,
