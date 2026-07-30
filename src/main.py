@@ -74,9 +74,27 @@ def llm_available() -> bool:
     return bool(os.environ.get("MINIMAX_API_KEY"))
 
 
-def today_start_iso() -> str:
+def today_start() -> datetime:
     now = datetime.now(timezone.utc)
-    return now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def today_start_iso() -> str:
+    return today_start().isoformat()
+
+
+def _message_originally_from_before_today(msg) -> bool:
+    """True kalau pesan ini ASLINYA dikirim SEBELUM hari kalender berjalan
+    (UTC) — dipakai di handle_edited_message untuk mencegah event EDIT pada
+    pesan LAMA (dikirim hari-hari sebelumnya) diproses seolah sinyal baru.
+    msg.date Telethon = waktu KIRIM ASLI pesan, BUKAN waktu edit — channel
+    ini sering menambah catatan ke sinyal lama yang sudah closed/SL lewat
+    edit, dan teks aslinya (entry/SL/TP) tetap ada di situ, jadi kalau
+    diproses ulang lewat classify_and_act bisa salah dieksekusi sebagai
+    posisi BARU padahal cuma catatan ke sinyal mati."""
+    if msg.date is None:
+        return False
+    return msg.date.astimezone(timezone.utc) < today_start()
 
 
 class Context:
@@ -341,36 +359,55 @@ async def handle_edited_message(ctx: Context, channel_label: str, msg) -> None:
     (mis. entry signal di-edit jadi berisi 'TP1 hit') — kalau kita cuma
     dengar NewMessage, semua edit ini terlewat sama sekali.
 
-    Guard penting: kalau message_id ini SUDAH pernah dieksekusi jadi
+    Guard penting #1: kalau message_id ini SUDAH pernah dieksekusi jadi
     posisi, jangan eksekusi ulang otomatis walau teks barunya juga
     terlihat seperti entry baru — bisa jadi cuma koreksi typo pada
     signal yang sama, bukan sinyal baru. Serahkan ke manusia.
+
+    Guard penting #2: kalau pesan ini ASLINYA dikirim SEBELUM hari ini
+    (bukan baru saja) — entah karena bot belum pernah mencatatnya sama
+    sekali (previous_text is None, mis. baru online lagi setelah offline
+    beberapa hari) atau sudah tercatat tapi baru sekarang berubah jadi
+    terlihat seperti entry — JANGAN dieksekusi otomatis. Ini nutup celah
+    nyata: event MessageEdited bisa datang untuk pesan lama yang sudah
+    closed/SL, dan teks entry aslinya masih match pola sinyal, jadi tanpa
+    guard ini bot bisa "tiba-tiba" buka posisi baru padahal tidak ada
+    sinyal baru sama sekali yang terlihat di channel.
     """
     text = msg.raw_text or ""
     previous_text = ctx.db.get_message_text(channel_label, msg.id)
 
     if previous_text is None:
-        # Belum pernah tercatat (mis. bot baru start setelah edit terjadi)
-        # -> perlakukan seperti pesan baru.
+        # Belum pernah tercatat (mis. bot baru start setelah edit terjadi,
+        # atau ini pesan lama yang baru sekarang di-edit -- lihat guard #2
+        # di bawah) -> catat dulu.
         if not ctx.db.insert_message(_message_row(channel_label, msg)):
             return
-        await classify_and_act(ctx, text, msg)
-        return
-
-    if previous_text == text:
+    elif previous_text == text:
         log.debug("Pesan #%s di-edit tapi teks tidak berubah — diabaikan", msg.id)
         return
+    else:
+        log.info("Pesan #%s di-edit, teks berubah — diproses ulang", msg.id)
+        ctx.db.update_message_text(channel_label, msg.id, text)
 
-    log.info("Pesan #%s di-edit, teks berubah — diproses ulang", msg.id)
-    ctx.db.update_message_text(channel_label, msg.id, text)
+        existing_position = ctx.db.get_position_by_signal_id(msg.id)
+        if existing_position is not None:
+            preview = text[:300].replace("\n", " | ")
+            notifier.send(
+                f"⚠️ Signal #{msg.id} ({existing_position['symbol']}) DIEDIT channel SETELAH "
+                f"dieksekusi (ticket #{existing_position['ticket']}).\nTeks baru: {preview}\n"
+                f"Tidak dieksekusi ulang otomatis — cek manual kalau perlu penyesuaian posisi."
+            )
+            return
 
-    existing_position = ctx.db.get_position_by_signal_id(msg.id)
-    if existing_position is not None:
+    if _message_originally_from_before_today(msg):
+        original_date = msg.date.astimezone(timezone.utc).date()
         preview = text[:300].replace("\n", " | ")
         notifier.send(
-            f"⚠️ Signal #{msg.id} ({existing_position['symbol']}) DIEDIT channel SETELAH "
-            f"dieksekusi (ticket #{existing_position['ticket']}).\nTeks baru: {preview}\n"
-            f"Tidak dieksekusi ulang otomatis — cek manual kalau perlu penyesuaian posisi."
+            f"⚠️ Pesan #{msg.id} (asli diposting {original_date}, BUKAN hari ini) baru terlihat "
+            f"lewat event EDIT — TIDAK diproses otomatis sebagai sinyal baru (kemungkinan besar "
+            f"cuma tambahan catatan ke sinyal LAMA, mis. hasil TP/SL). Cek manual kalau memang "
+            f"perlu ditindaklanjuti.\nTeks: {preview}"
         )
         return
 

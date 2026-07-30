@@ -1,6 +1,6 @@
 import asyncio
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -35,11 +35,11 @@ GOLD_PARTIAL_CLOSE_ONLY_TEXT = "GOLD | Live Update\n\nYou may close partially."
 GOLD_CLOSE_ALL_TEXT = "GOLD | Live Update\n\nHit Profit +110 pip.\n\nWe now prefer to close the position due to the current geopolitical situation."
 
 
-def _fake_msg(msg_id, text, reply_to_msg_id=None):
+def _fake_msg(msg_id, text, reply_to_msg_id=None, date=None):
     return SimpleNamespace(
         id=msg_id,
         raw_text=text,
-        date=datetime.now(timezone.utc),
+        date=date if date is not None else datetime.now(timezone.utc),
         reply_to_msg_id=reply_to_msg_id,
         to_dict=lambda: {"id": msg_id},
     )
@@ -311,6 +311,72 @@ def test_edited_message_not_previously_seen_is_processed_as_new(tmp_path, monkey
     )
 
     msg = _fake_msg(31, GOLD_ENTRY_TEXT)
+    asyncio.run(main_mod.handle_edited_message(ctx, "chan", msg))
+
+    assert ctx.db.get_open_position_by_symbol("GOLD") is not None
+
+
+def test_edited_message_of_old_never_seen_message_is_not_executed(tmp_path, monkeypatch):
+    # Kasus nyata yang dilaporkan user: bot tiba-tiba buka posisi padahal
+    # TIDAK ADA sinyal baru sama sekali yang terlihat di channel. Root
+    # cause: event MessageEdited bisa datang untuk pesan LAMA (dikirim
+    # hari-hari sebelumnya, sebelum bot pernah mencatatnya) -- teks entry
+    # aslinya masih match pola sinyal, jadi tanpa guard ini bot eksekusi
+    # ulang seolah sinyal baru.
+    ctx = _make_ctx(tmp_path)
+    notified = []
+    monkeypatch.setattr(notifier, "send", lambda text: notified.append(text))
+
+    execute_calls = []
+    monkeypatch.setattr(main_mod, "execute_signal", lambda **kw: execute_calls.append(1))
+
+    old_date = datetime.now(timezone.utc) - timedelta(days=3)
+    msg = _fake_msg(40, GOLD_ENTRY_TEXT, date=old_date)
+    asyncio.run(main_mod.handle_edited_message(ctx, "chan", msg))
+
+    assert execute_calls == []
+    assert ctx.db.get_open_position_by_symbol("GOLD") is None
+    assert any("BUKAN hari ini" in n for n in notified)
+
+
+def test_edited_message_of_old_tracked_chatter_becoming_signal_is_not_executed(tmp_path, monkeypatch):
+    # Pesan lama SUDAH tercatat (dulu bukan sinyal, mis. chatter), lalu
+    # hari ini di-edit sampai teksnya berubah jadi cocok pola entry --
+    # tetap harus ditolak karena pesan aslinya bukan dari hari ini.
+    ctx = _make_ctx(tmp_path)
+    notified = []
+    monkeypatch.setattr(notifier, "send", lambda text: notified.append(text))
+
+    execute_calls = []
+    monkeypatch.setattr(main_mod, "execute_signal", lambda **kw: execute_calls.append(1))
+
+    old_date = datetime.now(timezone.utc) - timedelta(days=2)
+    original_msg = _fake_msg(41, CHATTER_TEXT, date=old_date)
+    asyncio.run(main_mod.handle_new_message(ctx, "chan", original_msg))
+
+    edited_msg = _fake_msg(41, GOLD_ENTRY_TEXT, date=old_date)
+    asyncio.run(main_mod.handle_edited_message(ctx, "chan", edited_msg))
+
+    assert execute_calls == []
+    assert ctx.db.get_open_position_by_symbol("GOLD") is None
+    assert any("BUKAN hari ini" in n for n in notified)
+
+
+def test_edited_message_from_today_never_seen_still_executes(tmp_path, monkeypatch):
+    # Beda dgn test di atas: kalau pesan ASLINYA dari HARI INI (mis. bot
+    # sempat offline sebentar dan baru menangkap event edit), tetap harus
+    # diproses normal sebagai sinyal baru -- guard ini cuma menahan pesan
+    # LAMA, bukan menahan semua pesan yang belum pernah tercatat.
+    ctx = _make_ctx(tmp_path)
+    notified = []
+    monkeypatch.setattr(notifier, "send", lambda text: notified.append(text))
+    monkeypatch.setattr(mt5_client, "get_symbol_info", lambda s: _fake_symbol_info())
+    monkeypatch.setattr(
+        main_mod, "execute_signal",
+        lambda **kw: ExecutionResult(success=True, detail="ok", ticket=77, lot=0.1, price=4344.5),
+    )
+
+    msg = _fake_msg(42, GOLD_ENTRY_TEXT, date=main_mod.today_start() + timedelta(hours=1))
     asyncio.run(main_mod.handle_edited_message(ctx, "chan", msg))
 
     assert ctx.db.get_open_position_by_symbol("GOLD") is not None
