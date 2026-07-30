@@ -83,6 +83,10 @@ def parse_args():
         "--llm-cache", default=DEFAULT_LLM_CACHE,
         help=f"Path file cache LLM (default: {DEFAULT_LLM_CACHE}), dipakai kalau --source llm.",
     )
+    p.add_argument(
+        "--initial-deposit", type=float, default=800.0,
+        help="Modal awal (USD) buat hitung max drawdown balance/equity dalam %% (default: 800).",
+    )
     return p.parse_args()
 
 
@@ -153,11 +157,12 @@ def main():
         classify_fn=classify_fn,
     )
 
-    report = build_report(trades, symbol_specs, skipped)
+    report = build_report(trades, symbol_specs, skipped, initial_deposit=args.initial_deposit)
 
     print("\n" + "=" * 50)
     print("HASIL BACKTEST")
     print("=" * 50)
+    print(f"Modal awal               : ${args.initial_deposit:,.2f}")
     print(f"Total trade tereksekusi : {report.total_trades}")
     print(f"  - closed              : {report.closed_trades}")
     print(f"  - masih terbuka (EOD) : {report.still_open_trades}")
@@ -167,6 +172,8 @@ def main():
     pf = f"{report.profit_factor:.2f}" if report.profit_factor is not None else "N/A (tidak ada loss)"
     print(f"Profit factor           : {pf}")
     print(f"Max drawdown            : ${report.max_drawdown_usd:,.2f}")
+    print(f"Max DD balance          : {report.max_balance_drawdown_pct:.1f}%")
+    print(f"Max DD equity (estimasi): {report.max_equity_drawdown_pct:.1f}%")
     print(f"Max consecutive loss    : {report.max_consecutive_losses}")
     print()
     print("Dilewati:")

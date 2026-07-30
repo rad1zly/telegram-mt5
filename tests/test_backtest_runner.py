@@ -115,6 +115,46 @@ def test_build_report_profit_factor_is_none_when_no_losses():
     assert report.max_consecutive_losses == 0
 
 
+def _closed_trade_at(entry_time: datetime, exit_time: datetime, pnl: float, msg_id: int) -> SimulatedTrade:
+    t = SimulatedTrade(
+        signal_message_id=msg_id, canonical_symbol="XAUUSD", direction="SELL", lot=0.1,
+        entry_price=4344.0, entry_time=entry_time, sl=4348.0, tp=4333.0, kind="MARKET",
+    )
+    t.exit_price = 4340.0
+    t.exit_time = exit_time
+    t.exit_reason = "tp" if pnl > 0 else "sl"
+    t.remaining_lot = 0.0
+    t.realized_pnl_usd = pnl
+    return t
+
+
+def test_build_report_balance_and_equity_drawdown_pct_match_when_no_overlap():
+    # Tidak ada trade yang tumpang tindih -> equity dan balance harus
+    # persis sama sepanjang waktu (tidak ada floating dari posisi LAIN).
+    trade = _closed_trade_at(T0, T0 + timedelta(minutes=10), -160.0, msg_id=1)
+    report = build_report([trade], {"XAUUSD": _spec()}, skipped={}, initial_deposit=800.0)
+    assert report.max_balance_drawdown_pct == pytest.approx(20.0)  # 160/800
+    assert report.max_equity_drawdown_pct == pytest.approx(20.0)
+
+
+def test_build_report_balance_vs_equity_drawdown_pct_diverge_on_overlapping_trades():
+    # Trade A (rugi besar -400) masih terbuka saat Trade B (untung +100)
+    # dibuka & ditutup -- equity harus mencerminkan floating rugi A itu
+    # SEBELUM A benar-benar closed, balance TIDAK (baru berubah pas close).
+    # A: entry T0, exit T0+100m, pnl -400
+    # B: entry T0+50m, exit T0+150m, pnl +100
+    # balance: 800 -> (t=100) 400 -> (t=150) 500 => max DD balance = 400/800 = 50%
+    # equity : 800 -> (t=50, A floating -200) 600 -> (t=100, A closed+B floating +50) 450
+    #          -> (t=150) 500 => max DD equity = (800-450)/800 = 43.75%
+    trade_a = _closed_trade_at(T0, T0 + timedelta(minutes=100), -400.0, msg_id=1)
+    trade_b = _closed_trade_at(T0 + timedelta(minutes=50), T0 + timedelta(minutes=150), 100.0, msg_id=2)
+
+    report = build_report([trade_a, trade_b], {"XAUUSD": _spec()}, skipped={}, initial_deposit=800.0)
+
+    assert report.max_balance_drawdown_pct == pytest.approx(50.0)
+    assert report.max_equity_drawdown_pct == pytest.approx(43.75)
+
+
 def test_run_skips_signal_when_symbol_not_covered():
     rows = [{
         "message_id": 1,

@@ -323,6 +323,8 @@ class BacktestReport:
     max_drawdown_usd: float
     max_consecutive_losses: int
     profit_factor: Optional[float]
+    max_balance_drawdown_pct: float
+    max_equity_drawdown_pct: float
     per_symbol: dict
     skipped: dict
 
@@ -340,6 +342,62 @@ def _max_drawdown_usd(chronological_pnls: list) -> float:
         peak = max(peak, equity)
         max_dd = max(max_dd, peak - equity)
     return max_dd
+
+
+def _balance_curve_points(closed_trades: list, initial_deposit: float) -> list:
+    """[(exit_time, balance)] terurut kronologis -- BALANCE (beda dari
+    equity) cuma berubah saat trade benar-benar CLOSE/realized, persis
+    definisi 'Balance' di terminal broker."""
+    points = []
+    running = initial_deposit
+    for _, exit_time, pnl in sorted(closed_trades, key=lambda c: c[1]):
+        running += pnl
+        points.append((exit_time, running))
+    return points
+
+
+def _equity_curve_points(closed_trades: list, initial_deposit: float) -> list:
+    """[(t, equity)] di setiap titik entry/exit TRADE MANAPUN -- equity =
+    balance + floating P/L trade yang masih terbuka saat itu (equity bisa
+    lebih rendah dari balance saat posisi lain sedang floating rugi,
+    meski belum ada yang di-close).
+
+    CATATAN PENTING: floating P/L trade yang masih terbuka DIAPROKSIMASI
+    linear dari 0 (saat entry) ke pnl final (saat exit) berdasarkan
+    fraksi waktu berlalu -- build_report cuma menerima titik entry & exit
+    tiap trade (bukan seluruh jalur harga di antaranya), jadi ini ESTIMASI,
+    bukan mark-to-market presisi tick. Balance TIDAK kena masalah ini
+    karena cuma bergantung pada P/L final yang sudah pasti/realized."""
+    if not closed_trades:
+        return []
+    event_times = sorted({t for c in closed_trades for t in (c[0], c[1])})
+    by_exit = sorted(closed_trades, key=lambda c: c[1])
+
+    points = []
+    for t in event_times:
+        balance = initial_deposit + sum(pnl for _, exit_time, pnl in by_exit if exit_time <= t)
+        floating = 0.0
+        for entry_time, exit_time, pnl in closed_trades:
+            if entry_time <= t < exit_time:
+                duration = (exit_time - entry_time).total_seconds()
+                frac = (t - entry_time).total_seconds() / duration if duration > 0 else 0.0
+                floating += pnl * min(max(frac, 0.0), 1.0)
+        points.append((t, balance + floating))
+    return points
+
+
+def _max_drawdown_pct(points: list, initial_deposit: float) -> float:
+    """Persentase penurunan TERBESAR dari puncak berjalan (standar
+    'maximal drawdown %' broker -- relatif ke puncak SEBELUM titik itu,
+    bukan ke initial_deposit tetap). Puncak diawali dari initial_deposit
+    itu sendiri, supaya loss di trade pertama pun terukur dengan benar."""
+    peak = initial_deposit
+    max_dd_pct = 0.0
+    for _, value in points:
+        peak = max(peak, value)
+        if peak > 0:
+            max_dd_pct = max(max_dd_pct, (peak - value) / peak * 100)
+    return max_dd_pct
 
 
 def _max_consecutive_losses(chronological_pnls: list) -> int:
@@ -364,14 +422,14 @@ def _profit_factor(chronological_pnls: list) -> Optional[float]:
     return gross_profit / gross_loss
 
 
-def build_report(trades: list, symbol_specs: dict, skipped: dict) -> BacktestReport:
+def build_report(trades: list, symbol_specs: dict, skipped: dict, initial_deposit: float = 1000.0) -> BacktestReport:
     wins = 0
     losses = 0
     total_pnl = 0.0
     closed_count = 0
     open_count = 0
     per_symbol: dict = {}
-    closed = []  # (exit_time, pnl) -- buat max DD / consecutive-loss / profit factor
+    closed = []  # (entry_time, exit_time, pnl) -- buat max DD/consecutive-loss/profit factor/balance/equity
 
     for t in trades:
         spec = symbol_specs[t.canonical_symbol]
@@ -389,7 +447,7 @@ def build_report(trades: list, symbol_specs: dict, skipped: dict) -> BacktestRep
             else:
                 losses += 1
                 stats["losses"] += 1
-            closed.append((t.exit_time, pnl))
+            closed.append((t.entry_time, t.exit_time, pnl))
         else:
             open_count += 1
 
@@ -398,8 +456,9 @@ def build_report(trades: list, symbol_specs: dict, skipped: dict) -> BacktestRep
 
     win_rate = (wins / closed_count * 100) if closed_count else 0.0
 
-    closed.sort(key=lambda pair: pair[0])
-    ordered_pnls = [pnl for _, pnl in closed]
+    ordered_pnls = [pnl for _, _, pnl in sorted(closed, key=lambda c: c[1])]
+    balance_points = _balance_curve_points(closed, initial_deposit)
+    equity_points = _equity_curve_points(closed, initial_deposit)
 
     return BacktestReport(
         total_trades=len(trades),
@@ -410,6 +469,8 @@ def build_report(trades: list, symbol_specs: dict, skipped: dict) -> BacktestRep
         max_drawdown_usd=_max_drawdown_usd(ordered_pnls),
         max_consecutive_losses=_max_consecutive_losses(ordered_pnls),
         profit_factor=_profit_factor(ordered_pnls),
+        max_balance_drawdown_pct=_max_drawdown_pct(balance_points, initial_deposit),
+        max_equity_drawdown_pct=_max_drawdown_pct(equity_points, initial_deposit),
         per_symbol=per_symbol,
         skipped=skipped,
     )
