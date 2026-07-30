@@ -4,6 +4,8 @@ python-dotenv>=1.0
 openai>=1.50  # dipakai untuk MiniMax API (kompatibel format OpenAI)
 requests>=2.31  # notifikasi via Telegram Bot API
 pytest>=8.0
+pandas>=2.0  # parsing cepat file tick besar (backtest/tick_data.py) -- ratusan juta baris
+numpy>=1.24  # dipakai bareng pandas (perhitungan vektor di backtest/tick_engine.py)
 
 # Windows-only — jalankan mini PC:
 # pip install MetaTrader5

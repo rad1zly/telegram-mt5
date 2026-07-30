@@ -87,11 +87,11 @@ def main():
             print(f"  [!] {path} tidak ada, {canonical} dilewati (butuh export manual dari MT5)")
             continue
         series = TickSeries.from_csv(path)
-        if not series.ticks:
+        if len(series) == 0:
             print(f"  [!] {path} kosong/tidak terbaca, {canonical} dilewati")
             continue
         tick_series[canonical] = series
-        print(f"  {canonical}: {len(series)} tick ({series.ticks[0].time} - {series.ticks[-1].time})")
+        print(f"  {canonical}: {len(series):,} tick ({series.time_at(0)} - {series.time_at(len(series) - 1)})")
 
     if not tick_series:
         print("\nTidak ada data tick yang berhasil dimuat sama sekali -- berhenti.")

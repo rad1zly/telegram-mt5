@@ -3,8 +3,10 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, ".")
 
+import numpy as np  # noqa: E402
+
 from backtest.engine import SimulatedTrade, SymbolSpec  # noqa: E402
-from backtest.tick_data import Tick, TickSeries  # noqa: E402
+from backtest.tick_data import TickSeries, _to_ns  # noqa: E402
 from backtest.tick_engine import resolve_entry_fill_tick, resolve_trade_up_to_tick  # noqa: E402
 
 T0 = datetime(2025, 3, 3, 4, 15, 0, tzinfo=timezone.utc)
@@ -21,8 +23,10 @@ def _spec():
 
 def _series(rows):
     # rows: list of (seconds_offset, bid, ask)
-    ticks = [Tick(time=T0 + timedelta(seconds=s), bid=b, ask=a) for s, b, a in rows]
-    return TickSeries(ticks)
+    times = np.array([_to_ns(T0 + timedelta(seconds=s)) for s, _, _ in rows], dtype="int64")
+    bids = np.array([b for _, b, _ in rows], dtype="float64")
+    asks = np.array([a for _, _, a in rows], dtype="float64")
+    return TickSeries(times=times, bids=bids, asks=asks)
 
 
 def test_resolve_entry_fill_market_order_when_within_tolerance():
@@ -38,7 +42,6 @@ def test_resolve_entry_fill_market_order_when_within_tolerance():
 
 
 def test_resolve_entry_fill_pending_sell_stop_waits_for_bid_to_drop():
-    # entry jauh di bawah harga sekarang -> SELL_STOP (breakout ke bawah)
     series = _series([
         (0, 4400.0, 4400.2),
         (5, 4390.0, 4390.2),
@@ -65,8 +68,6 @@ def test_resolve_entry_fill_returns_none_when_pending_never_touched():
 
 
 def test_resolve_trade_up_to_tick_hits_tp_before_sl_when_price_moves_favorably_first():
-    # SELL: entry 4344, sl 4348, tp 4333. Harga turun dulu (nyentuh TP)
-    # SEBELUM naik ke SL -- versi tick harus urut persis, bukan tebak.
     trade = SimulatedTrade(
         signal_message_id=1, canonical_symbol="XAUUSD", direction="SELL", lot=0.1,
         entry_price=4344.0, entry_time=T0, sl=4348.0, tp=4333.0, kind="MARKET",
@@ -74,8 +75,8 @@ def test_resolve_trade_up_to_tick_hits_tp_before_sl_when_price_moves_favorably_f
     series = _series([
         (0, 4344.0, 4344.2),
         (5, 4333.7, 4333.9),
-        (10, 4332.8, 4333.0),  # ASK nyentuh TP (4333) di sini -- posisi SELL ditutup dgn ASK
-        (15, 4348.5, 4348.7),  # baru naik ke SL SETELAHNYA -- seharusnya tidak relevan lagi
+        (10, 4332.8, 4333.0),  # ASK nyentuh TP (4333) -- posisi SELL ditutup dgn ASK
+        (15, 4348.5, 4348.7),  # baru naik ke SL SETELAHNYA -- tidak relevan lagi
     ])
     resolve_trade_up_to_tick(trade, series, T0 + timedelta(seconds=20))
     assert trade.exit_reason == "tp"
@@ -90,7 +91,7 @@ def test_resolve_trade_up_to_tick_hits_sl_when_that_comes_first():
     series = _series([
         (0, 4344.0, 4344.2),
         (5, 4348.0, 4348.2),  # ASK nyentuh SL duluan
-        (10, 4333.0, 4333.2),  # baru turun ke TP -- sudah tidak relevan, trade sudah closed
+        (10, 4333.0, 4333.2),  # baru turun ke TP -- sudah tidak relevan
     ])
     resolve_trade_up_to_tick(trade, series, T0 + timedelta(seconds=20))
     assert trade.exit_reason == "sl"
@@ -104,7 +105,7 @@ def test_resolve_trade_up_to_tick_buy_position_uses_bid_to_close():
     )
     series = _series([
         (0, 4344.0, 4344.2),
-        (5, 4354.8, 4355.0),  # BID belum nyentuh TP (4355) tepat -- ASK sudah tapi bid yg relevan
+        (5, 4354.8, 4355.0),  # BID belum nyentuh TP (4355) -- ASK sudah tapi bid yg relevan
         (10, 4355.0, 4355.2),  # sekarang BID nyentuh TP
     ])
     resolve_trade_up_to_tick(trade, series, T0 + timedelta(seconds=20))
@@ -126,3 +127,39 @@ def test_auto_be_r_multiple_moves_sl_to_entry_mechanically():
     assert trade.be_moved is True
     assert trade.exit_reason == "sl"
     assert trade.exit_price == trade.entry_price
+
+
+def test_auto_be_does_not_reapply_old_sl_after_moving_to_breakeven():
+    # SL LAMA (4348) TIDAK boleh lagi jadi acuan setelah auto-BE mindahin
+    # SL ke entry (4344) -- fase 2 harus pakai SL BARU, bukan lama.
+    trade = SimulatedTrade(
+        signal_message_id=5, canonical_symbol="XAUUSD", direction="SELL", lot=0.1,
+        entry_price=4344.0, entry_time=T0, sl=4348.0, tp=4300.0, kind="MARKET", r_value=4.0,
+    )
+    series = _series([
+        (0, 4344.0, 4344.2),
+        (5, 4339.8, 4340.0),  # auto-BE trigger (1R)
+        (10, 4310.0, 4310.2),  # lanjut turun mendekati TP, TIDAK pernah balik ke 4348
+        (15, 4299.8, 4300.0),  # ASK nyentuh TP (4300)
+    ])
+    resolve_trade_up_to_tick(trade, series, T0 + timedelta(seconds=20), auto_be_r_multiple=1.0)
+    assert trade.be_moved is True
+    assert trade.exit_reason == "tp"
+    assert trade.exit_price == 4300.0
+
+
+def test_resolve_trade_up_to_tick_respects_up_to_time_boundary():
+    # Belum ada tick baru yg diproses melebihi up_to_time -- trade tetap
+    # terbuka, TIDAK exit walau tick SETELAH up_to_time sebenarnya kena SL.
+    trade = SimulatedTrade(
+        signal_message_id=6, canonical_symbol="XAUUSD", direction="SELL", lot=0.1,
+        entry_price=4344.0, entry_time=T0, sl=4348.0, tp=4300.0, kind="MARKET",
+    )
+    series = _series([
+        (0, 4344.0, 4344.2),
+        (5, 4344.5, 4344.7),
+        (100, 4348.5, 4348.7),  # ini SETELAH up_to_time -- belum boleh diproses
+    ])
+    resolve_trade_up_to_tick(trade, series, T0 + timedelta(seconds=10))
+    assert trade.exit_reason is None
+    assert trade.is_open is True

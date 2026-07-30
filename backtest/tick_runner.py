@@ -21,10 +21,10 @@ from src.trading.symbols import SymbolResolver
 __all__ = ["BacktestConfig", "BacktestReport", "build_report", "run"]
 
 
-def _close_price(tick, direction: str) -> float:
-    """Harga yang dipakai utk MENUTUP posisi pada tick tsb -- BUY ditutup
-    dgn SELL (dapat BID), SELL ditutup dgn BUY (bayar ASK)."""
-    return tick.bid if direction == "BUY" else tick.ask
+def _close_price(series: TickSeries, idx: int, direction: str) -> float:
+    """Harga yang dipakai utk MENUTUP posisi pada index tick tsb -- BUY
+    ditutup dgn SELL (dapat BID), SELL ditutup dgn BUY (bayar ASK)."""
+    return series.bids[idx] if direction == "BUY" else series.asks[idx]
 
 
 def run(
@@ -117,7 +117,7 @@ def run(
             trade = SimulatedTrade(
                 signal_message_id=row["message_id"], canonical_symbol=canonical,
                 direction=signal.action, lot=lot_result.lot,
-                entry_price=fill_price, entry_time=series.ticks[fill_idx].time,
+                entry_price=fill_price, entry_time=series.time_at(fill_idx),
                 sl=signal.sl, tp=tp_price, kind=kind, r_value=r_value,
             )
             trade._last_resolved_index = fill_idx - 1
@@ -188,7 +188,7 @@ def run(
             )
             if pc.ok:
                 idx = series.index_at_or_after(event_time)
-                approx_price = _close_price(series.ticks[idx], target_trade.direction) if idx is not None else target_trade.entry_price
+                approx_price = _close_price(series, idx, target_trade.direction) if idx is not None else target_trade.entry_price
                 if pc.action == "partial":
                     target_trade.realized_pnl_usd += pnl_usd(target_trade, approx_price, pc.volume, spec)
                     target_trade.remaining_lot -= pc.volume
@@ -211,7 +211,7 @@ def run(
 
         if "close_all" in kinds and target_trade.is_open and config.close_all_enabled:
             idx = series.index_at_or_after(event_time)
-            approx_price = _close_price(series.ticks[idx], target_trade.direction) if idx is not None else target_trade.entry_price
+            approx_price = _close_price(series, idx, target_trade.direction) if idx is not None else target_trade.entry_price
             target_trade.realized_pnl_usd += pnl_usd(target_trade, approx_price, target_trade.remaining_lot, spec)
             target_trade.remaining_lot = 0.0
             target_trade.exit_price = approx_price
@@ -219,9 +219,9 @@ def run(
             target_trade.exit_reason = "close_all"
 
     for canonical, series in tick_series.items():
-        if not series.ticks:
+        if len(series) == 0:
             continue
-        last_time = series.ticks[-1].time
+        last_time = series.time_at(len(series) - 1)
         for t in open_trades_by_symbol.get(canonical, []):
             resolve_trade_up_to_tick(t, series, last_time, auto_be_r_multiple=config.auto_be_r_multiple)
 

@@ -1,90 +1,113 @@
 """Loader untuk data TICK hasil export MT5 (History Center -> Export Ticks),
-format standar: tab-separated, header <DATE> <TIME> <BID> <ASK> <LAST>
-<VOLUME> <FLAGS> (kolom <LAST>/<VOLUME>/<FLAGS> diabaikan kalau tidak
-dipakai). Beda dari price_data.py (candle M5): di sini tiap baris adalah
+format standar: tab/comma-separated, header <DATE> <TIME> <BID> <ASK> <LAST>
+<VOLUME> <FLAGS>. Beda dari price_data.py (candle M5): tiap baris adalah
 SATU harga pada satu waktu presisi, bukan agregat open/high/low/close per
-interval -- makanya deteksi SL/TP tidak butuh asumsi "kalau dua-duanya
-kena di candle yang sama, SL duluan" lagi (lihat tick_engine.py).
+interval -- makanya deteksi SL/TP tidak butuh asumsi "kalau dua-duanya kena
+di candle yang sama, SL duluan" lagi (lihat tick_engine.py).
+
+PENTING soal skala data: file tick riil (1-2 tahun, instrumen aktif) bisa
+berisi RATUSAN JUTA baris (puluhan GB) -- jauh lebih besar dari candle M5.
+Simpan sebagai list objek Python per-tick TIDAK PRAKTIS (overhead memori
+~10x lipat lebih besar dari data mentahnya, dan parsing baris-per-baris
+pakai datetime.strptime bisa makan waktu berjam-jam). Makanya modul ini
+pakai pandas (parsing CSV di C, jauh lebih cepat) lalu simpan sbg array
+numpy (times sbg int64 nanodetik sejak epoch UTC, bid/ask sbg float64) --
+representasi paling ringkas yang masih bisa di-binary-search & divectorize.
 """
 
-from bisect import bisect_left
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import numpy as np
 
-@dataclass(frozen=True)
-class Tick:
-    time: datetime
-    bid: float
-    ask: float
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _to_ns(dt: datetime) -> int:
+    """Konversi EKSAK (integer, bukan float) ke nanodetik sejak epoch UTC --
+    dt TANPA tzinfo diasumsikan UTC (konsisten dgn seluruh codebase ini)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    delta = dt - _EPOCH
+    return (delta.days * 86400 + delta.seconds) * 1_000_000_000 + delta.microseconds * 1000
+
+
+def _from_ns(ns: int) -> datetime:
+    # presisi mikrodetik cukup (ticks MT5 biasanya milidetik) -- konversi
+    # balik ke datetime buat dipakai SimulatedTrade.entry_time/exit_time dst.
+    return _EPOCH + timedelta(microseconds=int(ns) // 1000)
 
 
 class TickSeries:
-    def __init__(self, ticks: list[Tick]):
-        # harus terurut ascending by time -- dijamin oleh from_csv (export
-        # MT5 sudah kronologis) dan oleh pemanggil test yang membuat manual.
-        self.ticks = ticks
-        self._times = [t.time for t in ticks]
+    def __init__(self, times: np.ndarray, bids: np.ndarray, asks: np.ndarray):
+        # times: int64 nanodetik sejak epoch UTC, HARUS terurut ascending
+        # (dijamin oleh from_csv via np.argsort, dan oleh pemanggil test).
+        self.times = times
+        self.bids = bids
+        self.asks = asks
 
     @classmethod
     def from_csv(cls, path: str) -> "TickSeries":
-        ticks = []
+        import pandas as pd
+
         with open(path) as f:
             header = f.readline()
-            delimiter = "\t" if "\t" in header else ","
-            header_cols = [c.strip().strip("<>").upper() for c in header.split(delimiter)]
-            try:
-                date_i = header_cols.index("DATE")
-                time_i = header_cols.index("TIME")
-                bid_i = header_cols.index("BID")
-                ask_i = header_cols.index("ASK")
-            except ValueError as e:
-                raise ValueError(
-                    f"Header tick CSV tidak dikenali (butuh kolom DATE/TIME/BID/ASK): {header!r}"
-                ) from e
+        delimiter = "\t" if "\t" in header else ","
 
-            for line in f:
-                line = line.rstrip("\n")
-                if not line:
-                    continue
-                parts = line.split(delimiter)
-                if len(parts) <= max(date_i, time_i, bid_i, ask_i):
-                    continue
-                date_str, time_str = parts[date_i], parts[time_i]
-                bid_str, ask_str = parts[bid_i], parts[ask_i]
-                if not bid_str or not ask_str:
-                    continue
-                # waktu tick MT5 biasanya HH:MM:SS.mmm (milidetik) -- coba
-                # dua format, jatuh ke yang tanpa milidetik kalau gagal.
-                dt = None
-                for fmt in ("%Y.%m.%d %H:%M:%S.%f", "%Y.%m.%d %H:%M:%S"):
-                    try:
-                        dt = datetime.strptime(f"{date_str} {time_str}", fmt).replace(tzinfo=timezone.utc)
-                        break
-                    except ValueError:
-                        continue
-                if dt is None:
-                    continue
-                try:
-                    bid, ask = float(bid_str), float(ask_str)
-                except ValueError:
-                    continue
-                if bid <= 0 or ask <= 0:
-                    continue
-                ticks.append(Tick(time=dt, bid=bid, ask=ask))
-        return cls(ticks)
+        df = pd.read_csv(
+            path, sep=delimiter, dtype=str, engine="c", header=0,
+            on_bad_lines="skip", keep_default_na=False,
+        )
+        df.columns = [c.strip().strip("<>").upper() for c in df.columns]
+
+        required = ("DATE", "TIME", "BID", "ASK")
+        missing = [c for c in required if c not in df.columns]
+        if missing:
+            raise ValueError(
+                f"Header tick CSV tidak dikenali, kolom hilang {missing} "
+                f"(kolom yang ada: {list(df.columns)})"
+            )
+
+        # Waktu tick MT5 biasanya HH:MM:SS.mmm (milidetik) tapi kadang tanpa
+        # itu -- normalisasi dulu (tambah '.000' kalau tidak ada titik) SEBELUM
+        # parse sekali dgn format tetap, supaya tetap vectorized/cepat (bukan
+        # coba-gagal per baris).
+        time_col = df["TIME"]
+        needs_ms = ~time_col.str.contains(r"\.", regex=True)
+        time_col = time_col.where(~needs_ms, time_col + ".000")
+
+        dt = pd.to_datetime(
+            df["DATE"] + " " + time_col, format="%Y.%m.%d %H:%M:%S.%f",
+            errors="coerce", utc=True,
+        )
+        bid = pd.to_numeric(df["BID"], errors="coerce")
+        ask = pd.to_numeric(df["ASK"], errors="coerce")
+
+        valid = dt.notna() & bid.notna() & ask.notna() & (bid > 0) & (ask > 0)
+
+        times_ns = dt[valid].values.astype("datetime64[ns]").astype("int64")
+        bids = bid[valid].to_numpy(dtype="float64")
+        asks = ask[valid].to_numpy(dtype="float64")
+
+        order = np.argsort(times_ns, kind="stable")
+        return cls(times=times_ns[order], bids=bids[order], asks=asks[order])
 
     def index_at_or_after(self, dt: datetime) -> Optional[int]:
         """Index tick pertama dengan time >= dt, atau None kalau dt
         melewati akhir data ATAU dt sebelum data mulai sama sekali (lihat
         alasan yang sama di price_data.py:index_at_or_after)."""
-        if not self.ticks or dt < self.ticks[0].time:
+        if len(self.times) == 0:
             return None
-        idx = bisect_left(self._times, dt)
-        if idx >= len(self.ticks):
+        ts = _to_ns(dt)
+        if ts < self.times[0]:
+            return None
+        idx = int(np.searchsorted(self.times, ts, side="left"))
+        if idx >= len(self.times):
             return None
         return idx
 
+    def time_at(self, idx: int) -> datetime:
+        return _from_ns(self.times[idx])
+
     def __len__(self) -> int:
-        return len(self.ticks)
+        return len(self.times)
