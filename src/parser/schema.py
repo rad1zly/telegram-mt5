@@ -23,6 +23,34 @@ class Signal:
     tp: list[float] = field(default_factory=list)
 
 
+def apply_price_offset(signal: "Signal", offset: float) -> "Signal":
+    """Geser SEMUA angka harga (entry, entry_range, sl, tp) sebesar offset
+    yang sama -- dipakai kalau broker kita punya selisih harga KONSISTEN
+    dan SATU ARAH dari referensi harga channel (mis. broker selalu $10
+    lebih tinggi di US30, $7 di NAS100 -- ditemukan lewat perbandingan
+    manual harga live). Ini pergeseran PARALEL: jarak relatif entry-ke-SL
+    dan entry-ke-TP TIDAK berubah, cuma level absolutnya dikoreksi supaya
+    order yang dipasang di broker kita match dengan maksud channel.
+
+    offset positif berarti broker kita LEBIH TINGGI dari referensi channel
+    (entry/sl/tp semua ditambah offset)."""
+    if offset == 0:
+        return signal
+    return Signal(
+        message_id=signal.message_id,
+        action=signal.action,
+        symbol=signal.symbol,
+        entry=(signal.entry + offset) if signal.entry is not None else None,
+        entry_range=(
+            (signal.entry_range[0] + offset, signal.entry_range[1] + offset)
+            if signal.entry_range is not None
+            else None
+        ),
+        sl=(signal.sl + offset) if signal.sl is not None else None,
+        tp=[t + offset for t in signal.tp],
+    )
+
+
 @dataclass
 class FollowUp:
     """Pesan susulan yang merujuk ke posisi yang sudah terbuka.

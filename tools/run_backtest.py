@@ -1,11 +1,15 @@
 """Jalankan backtest sungguhan: replay tests/fixtures/signals.jsonl
 terhadap data harga M5 di backtest/data/, hasilkan laporan.
 
-    .venv/bin/python tools/run_backtest.py     (atau python biasa di Windows)
+    .venv/bin/python tools/run_backtest.py                       (default: TP p40)
+    .venv/bin/python tools/run_backtest.py --tp-mode channel      (TP asli channel)
+    .venv/bin/python tools/run_backtest.py --source llm          (pakai cache LLM,
+                                                                    lihat tools/llm_classify_corpus.py)
 
 Sepenuhnya lokal, tidak butuh MT5/Telegram — cuma baca file yang sudah ada.
 """
 
+import argparse
 import os
 import sys
 
@@ -14,12 +18,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import yaml
 
 from backtest.engine import SymbolSpec
+from backtest.llm_source import load_llm_cache, make_llm_classify_fn
 from backtest.price_data import PriceSeries
 from backtest.runner import BacktestConfig, build_report, load_signal_rows, run
 from src.trading.symbols import SymbolResolver
 
 DATA_DIR = "backtest/data"
 SIGNALS_PATH = "tests/fixtures/signals.jsonl"
+DEFAULT_LLM_CACHE = "backtest/data/llm_classify_cache.jsonl"
 
 # canonical -> nama file CSV di backtest/data/
 PRICE_FILES = {
@@ -60,7 +66,29 @@ def load_symbol_specs():
     return specs
 
 
+def parse_args():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument(
+        "--tp-mode", choices=["p40", "channel"], default="p40",
+        help="p40 = target tetap per simbol (persentil-40 gerakan historis, TERBUKTI paling profitable). "
+             "channel = TP asli sesuai signal.tp channel (target terjauh, tp_index=-1) apa adanya.",
+    )
+    p.add_argument(
+        "--source", choices=["regex", "llm"], default="regex",
+        help="regex = parser regex (default, gratis & instan). "
+             "llm = pakai cache hasil classify_message_with_llm (lihat tools/llm_classify_corpus.py) -- "
+             "TIDAK panggil API lagi, cuma baca cache yang sudah ada.",
+    )
+    p.add_argument(
+        "--llm-cache", default=DEFAULT_LLM_CACHE,
+        help=f"Path file cache LLM (default: {DEFAULT_LLM_CACHE}), dipakai kalau --source llm.",
+    )
+    return p.parse_args()
+
+
 def main():
+    args = parse_args()
+
     with open("config/settings.yaml") as f:
         settings = yaml.safe_load(f)
 
@@ -81,11 +109,27 @@ def main():
     signal_rows = load_signal_rows(SIGNALS_PATH)
     print(f"  {len(signal_rows)} pesan")
 
+    classify_fn = None
+    if args.source == "llm":
+        if not os.path.exists(args.llm_cache):
+            print(f"\n[!] Cache LLM {args.llm_cache} tidak ada. Jalankan dulu:")
+            print("    .venv/bin/python tools/llm_classify_corpus.py")
+            return
+        print(f"\nMemuat cache LLM dari {args.llm_cache}...")
+        cache = load_llm_cache(args.llm_cache)
+        print(f"  {len(cache)} pesan sudah terklasifikasi di cache")
+        classify_fn = make_llm_classify_fn(cache)
+
     resolver = SymbolResolver(
         settings["symbols"]["aliases"],
         settings["symbols"].get("broker_overrides") or {},
     )
     broker_symbols = [specs.broker_symbol for specs in symbol_specs.values()]
+
+    tp_fixed_distance_overrides = (
+        (settings.get("backtest") or {}).get("tp_fixed_distance_overrides") or {}
+        if args.tp_mode == "p40" else {}
+    )
 
     config = BacktestConfig(
         risk_usd=settings["risk"]["usd_per_trade"],
@@ -93,17 +137,20 @@ def main():
         max_price_deviation_pips=settings["guards"]["max_price_deviation_pips"],
         price_deviation_overrides=settings["guards"].get("price_deviation_overrides") or {},
         min_sl_distance_overrides=settings["guards"].get("min_sl_distance_overrides") or {},
+        price_offset_overrides=settings["guards"].get("broker_price_offset_overrides") or {},
         partial_close_percent=settings["followup"]["partial_close_percent"],
         move_sl_to_be_enabled=settings["followup"]["move_sl_to_be"],
         partial_close_enabled=settings["followup"]["partial_close_tp1"],
         close_all_enabled=settings["followup"]["close_all"],
         sl_plus_buffer_overrides=settings["followup"].get("sl_plus_buffer_overrides") or {},
+        tp_fixed_distance_overrides=tp_fixed_distance_overrides,
     )
 
-    print("\nMenjalankan simulasi...")
+    print(f"\nMenjalankan simulasi (tp-mode={args.tp_mode}, source={args.source})...")
     trades, skipped = run(
         signal_rows=signal_rows, resolver=resolver, broker_symbols=broker_symbols,
         price_series=price_series, symbol_specs=symbol_specs, config=config,
+        classify_fn=classify_fn,
     )
 
     report = build_report(trades, symbol_specs, skipped)

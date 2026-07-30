@@ -55,6 +55,7 @@ class SimulatedTrade:
     tp1_hit: bool = False
     remaining_lot: float = field(default=0.0)
     realized_pnl_usd: float = 0.0
+    r_value: Optional[float] = None  # 1R = jarak entry ke SL awal -- dipakai utk auto-BE-at-1R & TP berbasis R
 
     _last_resolved_index: int = field(default=-1, repr=False)
 
@@ -63,7 +64,13 @@ class SimulatedTrade:
 
     @property
     def is_closed(self) -> bool:
-        return self.exit_reason in ("tp", "sl")
+        # "close_all"/"partial_close_full" (bukan cuma "tp"/"sl") JUGA berarti
+        # posisi ini sudah selesai -- kalau tidak, resolve_trade_up_to akan
+        # terus memproses candle sesudahnya (karena is_open jadi True lagi)
+        # dan diam-diam menimpa exit_reason ke "sl"/"tp" belakangan, plus
+        # trade "hantu" ini bisa salah kepilih sebagai target follow-up
+        # berikutnya untuk simbol yang sama.
+        return self.exit_reason in ("tp", "sl", "close_all", "partial_close_full")
 
     @property
     def is_open(self) -> bool:
@@ -121,12 +128,23 @@ def resolve_entry_fill(
     return None  # tidak pernah tersentuh sampai akhir data
 
 
-def resolve_trade_up_to(trade: SimulatedTrade, series: PriceSeries, up_to_time: datetime) -> None:
+def resolve_trade_up_to(
+    trade: SimulatedTrade,
+    series: PriceSeries,
+    up_to_time: datetime,
+    auto_be_r_multiple: Optional[float] = None,
+) -> None:
     """Majukan status trade sampai up_to_time kalau memang sudah kena
     TP/SL sebelum itu. Dipanggil incremental (lanjut dari candle
     terakhir yang sudah dicek), supaya SL yang berubah di tengah jalan
-    (move_sl_be) cuma berlaku untuk candle SETELAH follow-up itu terjadi
-    -- bukan diterapkan retroaktif ke masa lalu."""
+    (move_sl_be, atau auto-BE-at-R di bawah) cuma berlaku untuk candle
+    SETELAH kejadian itu -- bukan diterapkan retroaktif ke masa lalu.
+
+    auto_be_r_multiple: kalau diisi (mis. 1.0), begitu harga bergerak
+    menguntungkan sejauh N x trade.r_value, SL dipindah ke breakeven
+    SECARA MEKANIS -- TIDAK bergantung pesan follow-up apa pun dari
+    channel. Ini strategi "1R = breakeven" yang independen dari kata-kata
+    channel (yang jaraknya inkonsisten antar sinyal)."""
     if trade.is_closed:
         return
 
@@ -145,6 +163,12 @@ def resolve_trade_up_to(trade: SimulatedTrade, series: PriceSeries, up_to_time: 
         if candle.time > up_to_time:
             trade._last_resolved_index = i - 1
             return
+
+        if auto_be_r_multiple is not None and trade.r_value and not trade.be_moved:
+            favorable_move = (candle.high - trade.entry_price) if is_buy else (trade.entry_price - candle.low)
+            if favorable_move >= auto_be_r_multiple * trade.r_value:
+                trade.sl = trade.entry_price
+                trade.be_moved = True
 
         sl_hit = (candle.low <= trade.sl) if is_buy else (candle.high >= trade.sl)
         tp_hit = (candle.high >= trade.tp) if is_buy else (candle.low <= trade.tp)

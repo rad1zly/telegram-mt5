@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, ".")
 
-from src.parser.schema import Signal  # noqa: E402
+from src.parser.schema import Signal, apply_price_offset  # noqa: E402
 from src.trading import executor, mt5_client  # noqa: E402
 from src.trading.mt5_client import OrderResult  # noqa: E402
 from src.trading.symbols import SymbolResolver  # noqa: E402
@@ -244,6 +244,86 @@ def test_min_sl_distance_override_rejects_too_tight_sl(monkeypatch):
 
     assert not result.success
     assert "Lot ditolak" in result.detail
+
+
+def test_apply_price_offset_shifts_entry_sl_tp_in_parallel():
+    signal = Signal(message_id=1, action="SELL", symbol="US30", entry=51500.0, sl=51550.0, tp=[51400.0, 51300.0])
+    shifted = apply_price_offset(signal, 10.0)
+
+    assert shifted.entry == 51510.0
+    assert shifted.sl == 51560.0
+    assert shifted.tp == [51410.0, 51310.0]
+    # jarak relatif entry-ke-sl dan entry-ke-tp TIDAK berubah
+    assert shifted.sl - shifted.entry == signal.sl - signal.entry
+    assert shifted.tp[0] - shifted.entry == signal.tp[0] - signal.entry
+
+
+def test_apply_price_offset_shifts_entry_range_too():
+    signal = Signal(message_id=2, action="BUY", symbol="NAS100", entry=None, entry_range=(24000.0, 24010.0), sl=23950.0, tp=[24100.0])
+    shifted = apply_price_offset(signal, 7.0)
+
+    assert shifted.entry_range == (24007.0, 24017.0)
+
+
+def test_apply_price_offset_zero_returns_same_signal_unchanged():
+    signal = Signal(message_id=3, action="SELL", symbol="XAUUSD", entry=4344.0, sl=4348.0, tp=[4333.0])
+    shifted = apply_price_offset(signal, 0.0)
+
+    assert shifted.entry == signal.entry
+    assert shifted.sl == signal.sl
+    assert shifted.tp == signal.tp
+
+
+def test_execute_signal_applies_price_offset_before_lot_and_order(monkeypatch):
+    # US30 dgn offset +10 -- broker kita konsisten $10 lebih tinggi dari
+    # referensi channel (ditemukan lewat perbandingan manual live). Entry,
+    # SL, TP harus digeser SEBELUM dipakai hitung lot & kirim order.
+    signal = Signal(message_id=13, action="SELL", symbol="US30", entry=51500.0, sl=51550.0, tp=[51400.0])
+    resolver = SymbolResolver({"US30": ["US30"]})
+
+    captured = {}
+
+    def fake_send_order(**kwargs):
+        captured.update(kwargs)
+        return OrderResult(success=True, ticket=1, price=kwargs["entry"], kind="MARKET")
+
+    monkeypatch.setattr(mt5_client, "get_symbol_info", lambda symbol: _fake_symbol_info())
+    monkeypatch.setattr(mt5_client, "get_current_price", lambda symbol, direction: 51510.0)
+    monkeypatch.setattr(mt5_client, "send_order", fake_send_order)
+
+    result = executor.execute_signal(
+        signal=signal, resolver=resolver, broker_symbols=["US30"],
+        risk_usd=50.0, max_lot_cap=5.0,
+        price_offset_overrides={"US30": 10.0},
+    )
+
+    assert result.success
+    assert captured["entry"] == 51510.0  # entry via harga live (sudah broker-native)
+    assert captured["sl"] == 51560.0  # SL channel + offset
+    assert captured["tp"] == 51410.0  # TP channel + offset
+
+
+def test_execute_signal_no_offset_when_symbol_not_in_overrides(monkeypatch):
+    signal = Signal(message_id=14, action="SELL", symbol="GOLD", entry=4344.0, sl=4348.0, tp=[4333.0])
+    resolver = SymbolResolver(ALIASES)
+
+    captured = {}
+
+    def fake_send_order(**kwargs):
+        captured.update(kwargs)
+        return OrderResult(success=True, ticket=1, price=kwargs["entry"], kind="MARKET")
+
+    monkeypatch.setattr(mt5_client, "get_symbol_info", lambda symbol: _fake_symbol_info())
+    monkeypatch.setattr(mt5_client, "get_current_price", lambda symbol, direction: 4344.0)
+    monkeypatch.setattr(mt5_client, "send_order", fake_send_order)
+
+    executor.execute_signal(
+        signal=signal, resolver=resolver, broker_symbols=["XAUUSD"],
+        risk_usd=50.0, max_lot_cap=5.0,
+        price_offset_overrides={"US30": 10.0},  # simbol lain, tidak match
+    )
+
+    assert captured["sl"] == 4348.0  # tidak digeser sama sekali
 
 
 def test_min_sl_distance_override_absent_no_guard(monkeypatch):

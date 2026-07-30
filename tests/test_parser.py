@@ -71,19 +71,25 @@ def test_entry_signals_rejected_by_followup_parser():
         assert parse_followup_regex(text, message_id=3, reply_to_msg_id=None) is None
 
 
-def test_followup_gold_ambiguous_choice_is_info_only():
+def test_followup_gold_ambiguous_choice_resolves_to_partial_close():
     # "close fully position or Close partially and place your sl around 4349"
-    # -> pilihan (or), SL bukan ke entry -> tidak ada aksi otomatis yang dipicu
+    # -> pilihan (or) diresolve ke partial_close_tp1 (opsi lebih konservatif).
+    # "Hit Profit" di headline TIDAK memaksa close_all -- terbukti lewat
+    # backtest kalau dipaksa, rata-rata profit per aksi turun ke nyaris $0
+    # (channel sering punya beberapa target berurutan, "Hit Profit" pertama
+    # baru separuh jalan).
     followup = parse_followup_regex(GOLD_AMBIGUOUS_FOLLOWUP_TEXT, message_id=6, reply_to_msg_id=None)
 
     assert followup is not None
     assert followup.symbol == "GOLD"
-    assert followup.kinds == []
+    assert followup.kinds == ["partial_close_tp1"]
 
 
 def test_followup_us30_clear_instructions_both_kinds_detected():
-    # "You may close partially to secure gains and move the stop-loss to the entry."
-    # -> instruksi tunggal (bukan pilihan "or"), dua aksi sekaligus terdeteksi
+    # "Hit target +185 pip ... close partially to secure gains and move the
+    # stop-loss to the entry." -> instruksi partial + BE tetap dieksekusi;
+    # headline "Hit target" tidak override ke close_all (lihat catatan test
+    # sebelumnya).
     followup = parse_followup_regex(US30_CLEAR_FOLLOWUP_TEXT, message_id=7, reply_to_msg_id=None)
 
     assert followup is not None
@@ -281,21 +287,170 @@ def test_followup_close_the_position_bare_means_close_all():
 
 
 def test_followup_close_the_position_partially_with_filler_words():
-    # "close the position partially" -- kata sisipan sebelum "partially"
-    text = "GOLD | Live Update\n\nHit Profit +70 Pip\n\nYou may close the position partially and move your stop loss to around 4061 to secure your profits."
+    # "close the position partially" -- kata sisipan sebelum "partially".
+    # SENGAJA tanpa headline "Hit Target"/"secure profits" supaya menguji
+    # deteksi partial murni, terisolasi dari prioritas close_all yang lebih
+    # tinggi (lihat test_followup_us30_hit_target_overrides_partial_to_close_all
+    # utk kasus headline hit-target yang override ini).
+    text = "GOLD | Live Update\n\nStill running +70 pip.\n\nYou may close the position partially and move your stop loss to around 4061."
     followup = parse_followup_regex(text, message_id=1022, reply_to_msg_id=None)
     assert followup is not None
     assert followup.kinds == ["partial_close_tp1"]
 
 
-def test_followup_ambiguous_close_with_filler_words_still_suppressed():
+def test_followup_ambiguous_close_with_filler_words_resolves_to_partial():
     # "close the position fully, or close it partially" -- filler + pilihan "or"
-    # -> tetap harus ditekan (kinds kosong), bukan malah ke-detect keduanya
+    # -> diresolve ke partial_close_tp1 (bukan ke-detect keduanya, bukan ditekan).
+    # SENGAJA tanpa headline "Hit Target"/"secure profits" -- lihat catatan di
+    # test_followup_close_the_position_partially_with_filler_words.
     text = (
-        "GOLD | Live Update\n\nHit Target +140 Pip\n\nDue to the high market volatility, "
+        "GOLD | Live Update\n\nDue to the high market volatility, "
         "you may close the position fully, or close it partially and move your stop loss "
-        "to around 4092 to protect your profits."
+        "to around 4092."
     )
     followup = parse_followup_regex(text, message_id=1023, reply_to_msg_id=None)
     assert followup is not None
+    assert "partial_close_tp1" in followup.kinds
+    assert "close_all" not in followup.kinds
+
+
+def test_followup_gerund_closing_and_moving_both_detected():
+    # Bentuk gerund ("we recommend CLOSING...and MOVING...") -- ditemukan
+    # sangat umum di korpus asli (99+ pesan), regex versi awal cuma cocok
+    # bentuk dasar "close"/"move" dan melewatkan semua ini. SENGAJA tanpa
+    # "secure your profits" di akhir (itu sekarang prioritas close_all --
+    # lihat test_followup_secure_profits_without_close_word_triggers_close_all).
+    text = (
+        "US30 | Live Update\n\nThe price has reached the 52300 level, still moving.\n\n"
+        "For now, we recommend closing part of the position and moving "
+        "your stop loss to breakeven or slightly above your entry."
+    )
+    followup = parse_followup_regex(text, message_id=1024, reply_to_msg_id=None)
+    assert followup is not None
+    assert set(followup.kinds) == {"partial_close_tp1", "move_sl_be"}
+
+
+def test_followup_reversed_word_order_partially_close():
+    # Urutan kata terbalik: "PARTIALLY Close" (bukan "close partially").
+    # SENGAJA tanpa headline "Hit Target"/"secure profits" -- lihat catatan
+    # di test_followup_close_the_position_partially_with_filler_words.
+    text = "GOLD | Live Update\n\nStill running.\n\nPartially Close and move your stop loss to around 4036."
+    followup = parse_followup_regex(text, message_id=1025, reply_to_msg_id=None)
+    assert followup is not None
+    assert "partial_close_tp1" in followup.kinds
+
+
+def test_followup_close_all_with_symbol_name_between_the_and_position():
+    # Nama simbol nyempil di antara "the" dan "position": "closing the
+    # USNAS100 position" -- pola lama cuma cocok "the position" persis nempel.
+    text = "USNAS100 | Live Update\n\nHit Target +150 Pip\n\nWe recommend closing the USNAS100 position due to the shift in momentum."
+    followup = parse_followup_regex(text, message_id=1026, reply_to_msg_id=None)
+    assert followup is not None
+    assert followup.kinds == ["close_all"]
+
+
+def test_followup_close_positions_bare_plural():
+    text = "GOLD | Live Update\n\nHit Target +90 Pip\n\nYou may close positions now, and wait for a confirmed reversal before re-entering."
+    followup = parse_followup_regex(text, message_id=1027, reply_to_msg_id=None)
+    assert followup is not None
+    assert followup.kinds == ["close_all"]
+
+
+def test_followup_secure_profits_without_close_word_triggers_partial_close():
+    # "we recommend securing your profits" -- TANPA kata "close" sama sekali,
+    # tapi tetap instruksi nyata (present tense) -- diresolve ke partial close
+    # (di korpus, frasa ini hampir selalu jadi alasan pelengkap instruksi
+    # partial, bukan perintah tutup penuh berdiri sendiri).
+    text = "GOLD | Live Update\n\nDue to elevated volatility, we recommend securing your profits."
+    followup = parse_followup_regex(text, message_id=1029, reply_to_msg_id=None)
+    assert followup is not None
+    assert followup.kinds == ["partial_close_tp1"]
+
+
+def test_followup_secured_past_tense_narration_is_not_a_new_instruction():
+    # "we secured partial profits earlier" -- bentuk LAMPAU, cuma menceritakan
+    # kejadian yang sudah terjadi, BUKAN instruksi baru -> tidak memicu apa pun.
+    text = (
+        "GOLD | Live Update\n\nThe price failed to sustain below 21,380 and reversed, "
+        "triggering the adjusted stop loss at 21,400. However, we secured partial "
+        "profits earlier, reducing overall risk exposure."
+    )
+    followup = parse_followup_regex(text, message_id=1030, reply_to_msg_id=None)
+    assert followup is not None
     assert followup.kinds == []
+
+
+def test_followup_close_fully_with_secure_profit_justification_stays_close_all():
+    # "Close the position fully and secure your profits." -- close_all yang
+    # JELAS, dengan "secure your profits" cuma sebagai alasan, BUKAN pilihan
+    # kedua yang bersaing. Tidak boleh salah ke-flag ambigu jadi partial.
+    text = "SPX500 | Update\n\nFinal Target Hit +480 Pip\n\nClose the position fully and secure your profits."
+    followup = parse_followup_regex(text, message_id=1031, reply_to_msg_id=None)
+    assert followup is not None
+    assert followup.kinds == ["close_all"]
+
+
+def test_followup_fully_or_partially_conflict_resolves_to_partial_even_with_gerund():
+    # "closing the position fully or partially" -- versi gerund dari kasus
+    # ambigu; sebelumnya regex versi awal malah diam-diam menganggap ini
+    # "close_all" (menebak salah satu opsi tanpa tanda) karena literal
+    # "close ... fully" match tapi "or partially"-nya tidak terdeteksi sebagai
+    # pilihan. Sekarang benar-benar diresolve ke partial_close_tp1 (opsi
+    # konservatif, sesuai keputusan produk), bukan close_all yang tak sengaja.
+    # SENGAJA tanpa headline "Hit Target" -- itu prioritas lebih tinggi yang
+    # akan override logika ambigu ini (lihat test khusus utk itu).
+    text = (
+        "SPX500 | Live Update\n\nDue to high volatility, we recommend "
+        "closing the position fully or partially and moving your stop loss to breakeven."
+    )
+    followup = parse_followup_regex(text, message_id=1028, reply_to_msg_id=None)
+    assert followup is not None
+    assert "close_all" not in followup.kinds
+    assert "partial_close_tp1" in followup.kinds
+    assert "move_sl_be" in followup.kinds
+
+
+def test_followup_place_sl_at_entry_triggers_move_sl_be():
+    # "place your sl at entry" -- verba "place" (bukan "move"), ditemukan
+    # lewat pembacaan manual korpus (msg 3421 asli).
+    text = "USNAS100 - Live Update\n\nHit Target +80 pip\n\nplace your sl at entry or around 24470"
+    followup = parse_followup_regex(text, message_id=1032, reply_to_msg_id=None)
+    assert followup is not None
+    assert "move_sl_be" in followup.kinds
+
+
+def test_followup_place_sl_at_arbitrary_price_is_not_move_sl_be():
+    # "place your sl around 3758" -- harga baru yang BUKAN entry -> tetap
+    # tidak memicu apa pun (tidak bisa aman auto-set harga SL sembarang).
+    text = "GOLD - Live Update\n\nHit Target +120 pip\n\nplace your sl around 3758"
+    followup = parse_followup_regex(text, message_id=1033, reply_to_msg_id=None)
+    assert followup is not None
+    assert followup.kinds == []
+
+
+def test_followup_closed_the_position_past_tense_triggers_close_all():
+    # "Closed the position with a loss" -- bentuk LAMPAU, channel bilang
+    # mereka SUDAH cut-loss/tutup posisi sendiri (msg 2987 asli) -> ikuti
+    # keputusan real-time mereka, tutup juga posisi kita.
+    text = "GOLD - UPDATE\n\nClosed the position with a loss of around -25 pip, as price closed a 5-minute candle above 3332."
+    followup = parse_followup_regex(text, message_id=1034, reply_to_msg_id=None)
+    assert followup is not None
+    assert followup.kinds == ["close_all"]
+
+
+def test_followup_closed_candle_context_is_not_close_all():
+    # "closed a 1H candle above X" -- "closed" di sini soal candle, BUKAN
+    # posisi -> tidak boleh salah kena pola close_all bentuk lampau.
+    text = "GOLD | Update\n\nThe price broke above 3381 and closed a 1H candle above it, followed by continuation toward 3401."
+    followup = parse_followup_regex(text, message_id=1035, reply_to_msg_id=None)
+    assert followup is not None
+    assert followup.kinds == []
+
+
+def test_followup_close_the_positions_plural_with_article():
+    # "Close the positions on USNAS100 and US30" -- jamak DENGAN artikel
+    # "the" (msg 4326 asli) -- pola lama cuma cocok jamak TANPA artikel.
+    text = "USNAS100 | Live Update\n\nClose the positions on USNAS100 and US30, as the GDP data was released stronger than expected."
+    followup = parse_followup_regex(text, message_id=1036, reply_to_msg_id=None)
+    assert followup is not None
+    assert followup.kinds == ["close_all"]

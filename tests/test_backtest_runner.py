@@ -97,7 +97,7 @@ def test_run_applies_followup_move_sl_be_and_partial_close():
         },
         {
             "message_id": 2, "date_utc": (T0 + timedelta(minutes=5)).isoformat(),
-            "text": "GOLD | Live Update\n\nYou may close partially to secure gains and move the stop-loss to the entry.",
+            "text": "GOLD | Live Update\n\nYou may close partially and move the stop-loss to the entry.",
             "reply_to_msg_id": None,
         },
     ]
@@ -136,7 +136,7 @@ def test_run_applies_sl_plus_automatically_even_without_move_sl_be_text():
         },
         {
             "message_id": 2, "date_utc": (T0 + timedelta(minutes=5)).isoformat(),
-            "text": "GOLD | Live Update\n\nHit Target +10 pip. You may close partially to secure gains.",
+            "text": "GOLD | Live Update\n\nYou may close partially.",
             "reply_to_msg_id": None,
         },
     ]
@@ -236,3 +236,82 @@ def test_run_close_all_kind_ignored_when_disabled():
     assert len(trades) == 1
     trade = trades[0]
     assert trade.exit_reason == "tp"  # tetap jalan sampai TP, close_all diabaikan
+
+
+def test_run_resolves_followup_via_reply_chain_without_symbol_in_text():
+    # Kasus nyata (msg 2096->2097->2098 di korpus asli): follow-up TIDAK
+    # menyebut simbol sama sekali di teksnya (simbol cuma disebut di pesan
+    # BERANTAI sebelumnya) -- follow-up_symbol utk parser jadi None, TAPI
+    # reply_to_msg_id-nya menunjuk balik ke entry -> harus tetap ke-resolve
+    # lewat reply chain, bukan gagal karena followup.symbol kosong.
+    rows = [
+        {
+            "message_id": 1, "date_utc": T0.isoformat(),
+            "text": "GOLD\n\nsell below 4344 - 4345\n\ntp.: 4333, 4323\nsl.: 4348",
+            "reply_to_msg_id": None,
+        },
+        {
+            "message_id": 2, "date_utc": (T0 + timedelta(minutes=3)).isoformat(),
+            "text": "GOLD | Live Update\n\nAlready touched the level of 4340.",
+            "reply_to_msg_id": 1,  # reply ke entry
+        },
+        {
+            "message_id": 3, "date_utc": (T0 + timedelta(minutes=5)).isoformat(),
+            # TIDAK ada nama simbol sama sekali di sini (persis kasus nyata
+            # msg 2098) -- reply_to_msg_id menunjuk ke pesan 2 (BUKAN
+            # langsung ke entry), jadi harus telusuri 2 hop: 3->2->1 lewat
+            # trade_by_message_id (pesan 2 sudah ter-resolve ke trade yg
+            # sama sebagai efek samping saat diproses).
+            "text": "You may close partially and move the stop-loss to the entry.",
+            "reply_to_msg_id": 2,
+        },
+    ]
+
+    series = _series([
+        (0, 4344.0, 4344.5, 4343.5, 4344.2),
+        (5, 4340.0, 4340.5, 4339.5, 4340.0),
+        (10, 4344.0, 4345.0, 4343.5, 4344.5),
+    ])
+
+    resolver = SymbolResolver(ALIASES)
+    trades, skipped = run(
+        signal_rows=rows, resolver=resolver, broker_symbols=["XAUUSD+"],
+        price_series={"XAUUSD": series}, symbol_specs={"XAUUSD": _spec()},
+        config=_config(),
+    )
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.tp1_hit is True  # partial close berhasil dieksekusi via reply chain
+    assert trade.be_moved is True
+
+
+def test_run_reply_chain_falls_back_to_symbol_matching_when_no_reply():
+    # Follow-up TANPA reply_to_msg_id (None) dan tanpa chain yang valid ->
+    # harus tetap jalan lewat fallback lama (simbol+waktu-terdekat), bukan
+    # gagal total.
+    rows = [
+        {
+            "message_id": 1, "date_utc": T0.isoformat(),
+            "text": "GOLD\n\nsell below 4344 - 4345\n\ntp.: 4333, 4323\nsl.: 4348",
+            "reply_to_msg_id": None,
+        },
+        {
+            "message_id": 2, "date_utc": (T0 + timedelta(minutes=5)).isoformat(),
+            "text": "GOLD | Live Update\n\nYou may close partially and move the stop-loss to the entry.",
+            "reply_to_msg_id": None,
+        },
+    ]
+    series = _series([
+        (0, 4344.0, 4344.5, 4343.5, 4344.2),
+        (5, 4340.0, 4340.5, 4339.5, 4340.0),
+        (10, 4344.0, 4345.0, 4343.5, 4344.5),
+    ])
+    resolver = SymbolResolver(ALIASES)
+    trades, skipped = run(
+        signal_rows=rows, resolver=resolver, broker_symbols=["XAUUSD+"],
+        price_series={"XAUUSD": series}, symbol_specs={"XAUUSD": _spec()},
+        config=_config(),
+    )
+    assert len(trades) == 1
+    assert trades[0].tp1_hit is True

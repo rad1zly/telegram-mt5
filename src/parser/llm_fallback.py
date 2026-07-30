@@ -45,7 +45,16 @@ SIGNAL_TOOL = {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["BUY", "SELL", "BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"],
+                    "enum": ["BUY", "SELL"],
+                    "description": (
+                        "HANYA arah (BUY/SELL) -- JANGAN pernah kembalikan varian "
+                        "BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP walau teks channel "
+                        "menyebut 'buy limit'/'sell stop', dst. Market order vs pending "
+                        "(dan STOP vs LIMIT kalau pending) diputuskan kode eksekusi "
+                        "sendiri dengan membandingkan entry ke harga live saat itu, "
+                        "BUKAN dari teks -- kode hilir HANYA mengenali string 'BUY'/'SELL' "
+                        "persis, varian lain akan salah diproses."
+                    ),
                 },
                 "symbol": {
                     "type": "string",
@@ -78,9 +87,10 @@ FOLLOWUP_TOOL = {
             "Klasifikasikan pesan susulan terkait posisi yang sudah terbuka. "
             "Sebuah pesan bisa berisi LEBIH DARI SATU instruksi sekaligus "
             "(mis. 'close partially AND move SL to entry'), jadi kinds adalah "
-            "daftar. Kalau bahasa pesan cuma saran/kondisional (mis. 'you may', "
-            "'atau') dan TIDAK ada instruksi tegas yang cocok kategori di bawah, "
-            "atau pesan cuma update info tanpa instruksi, kembalikan kinds "
+            "daftar. Kalau pesan cuma update info murni (mis. skenario "
+            "kondisional 'kalau breakout di atas/bawah X akan begini', atau "
+            "narasi 'Hit SL -X pip' yang memang sudah otomatis tereksekusi "
+            "lewat order SL broker, tidak butuh aksi baru), kembalikan kinds "
             "kosong []. Jangan longgarkan kategori demi memaksa cocok."
         ),
         "parameters": {
@@ -97,9 +107,33 @@ FOLLOWUP_TOOL = {
                         "enum": ["move_sl_be", "partial_close_tp1", "close_all"],
                     },
                     "description": (
-                        "move_sl_be HANYA jika SL dipindah persis ke harga entry/breakeven "
-                        "(bukan ke harga baru yang lain). partial_close_tp1 HANYA jika ada "
-                        "instruksi tegas untuk menutup sebagian posisi. Kosongkan array kalau ragu."
+                        "PRINSIP PENTING (dipelajari dari ratusan contoh nyata korpus channel ini):\n\n"
+                        "1. 'Hit Target'/'Hit Profit'/'Hit Second Target' adalah HEADLINE PENANDA "
+                        "PROGRES, BUKAN instruksi tutup posisi dengan sendirinya -- channel ini "
+                        "sering punya BEBERAPA target berurutan (Hit Target pertama baru separuh "
+                        "jalan, bukan akhir trade). JANGAN otomatis close_all cuma karena ada "
+                        "headline ini -- lihat instruksi KONKRET di badan pesan.\n\n"
+                        "2. move_sl_be dipicu kalau SL dipindah/ditaruh ('move'/'place') ke ENTRY "
+                        "atau BREAKEVEN secara eksplisit. Kalau instruksinya harga BARU yang "
+                        "SPESIFIK dan BUKAN entry (mis. 'place your sl around 4349'), JANGAN "
+                        "masukkan move_sl_be -- kita tidak bisa aman auto-set harga SL sembarang "
+                        "tanpa tahu harga fill kita sendiri, biarkan kinds kosong untuk bagian ini.\n\n"
+                        "3. partial_close_tp1 dipicu oleh instruksi 'close partial(ly)' yang jelas, "
+                        "ATAU oleh bahasa 'secure/protect profit(s)' TANPA kata close eksplisit "
+                        "(mis. 'we recommend securing your profits') -- di korpus ini, frasa itu "
+                        "hampir selalu jadi alasan/pelengkap instruksi partial, BUKAN perintah "
+                        "tutup penuh berdiri sendiri. Kalimat PILIHAN eksplisit ('close fully OR "
+                        "partially') diresolve ke partial_close_tp1 (opsi lebih konservatif -- tetap "
+                        "mengunci sebagian profit tanpa menutup penuh posisi yang mungkin masih "
+                        "berjalan), BUKAN dianggap ambigu lalu didiamkan.\n\n"
+                        "4. close_all dipicu oleh instruksi tutup PENUH yang eksplisit ('close the "
+                        "position/all/fully/positions', TANPA kata partial), ATAU oleh narasi bentuk "
+                        "LAMPAU 'Closed the position/trade' (channel bilang mereka SUDAH cut-loss/"
+                        "tutup posisi sendiri -- ikuti keputusan real-time itu, jangan biarkan "
+                        "posisi kita menunggu SL asli yang lebih jauh). HATI-HATI: 'closed a 15min "
+                        "candle above/below X' itu soal CANDLE, bukan soal posisi -- JANGAN salah "
+                        "anggap sebagai close_all.\n\n"
+                        "Kosongkan array kalau benar-benar tidak ada kategori yang cocok."
                     ),
                 },
             },
@@ -123,6 +157,18 @@ FOLLOWUP_SYSTEM_PROMPT = (
     "Kamu mengklasifikasikan pesan susulan trading dari channel Telegram "
     "yang merujuk ke posisi yang sudah dibuka sebelumnya."
 )
+COMBINED_SYSTEM_PROMPT = (
+    "Kamu adalah otak pengambilan keputusan bot trading otomatis yang membaca "
+    "SATU pesan dari channel sinyal trading Telegram, persis seperti trader "
+    "manusia yang memantau channel ini akan membacanya. Setiap pesan bisa jadi: "
+    "(a) SIGNAL BARU (instruksi buka posisi), (b) FOLLOW-UP (merujuk posisi yang "
+    "sudah terbuka -- pindah SL, partial close, close all, atau cuma update info), "
+    "atau (c) BUKAN KEDUANYA (berita pasar, hasil mingguan, promosi, obrolan biasa). "
+    "Panggil PALING BANYAK SATU tool yang cocok. Kalau (c), atau kalau ragu sama "
+    "sekali kategori mana yang cocok, JANGAN panggil tool apa pun -- diam lebih "
+    "aman daripada menebak salah dengan uang sungguhan. Jangan berhalusinasi "
+    "angka yang tidak ada di teks."
+)
 
 
 def _client() -> OpenAI:
@@ -144,6 +190,25 @@ def _first_tool_call_args(response) -> Optional[dict]:
     except (json.JSONDecodeError, IndexError, AttributeError, TypeError) as e:
         log.error("Gagal parse argumen tool dari MiniMax: %s", e)
         return None
+
+
+def _first_tool_call(response) -> Optional[tuple[str, dict]]:
+    """Sama seperti _first_tool_call_args, tapi juga kembalikan NAMA tool
+    yang dipanggil -- dipakai classify_message_with_llm untuk membedakan
+    model memanggil extract_signal vs extract_followup."""
+    try:
+        message = response.choices[0].message
+    except (AttributeError, IndexError):
+        return None
+    if not getattr(message, "tool_calls", None):
+        return None
+    call = message.tool_calls[0]
+    try:
+        args = json.loads(call.function.arguments)
+    except (json.JSONDecodeError, AttributeError, TypeError) as e:
+        log.error("Gagal parse argumen tool dari MiniMax: %s", e)
+        return None
+    return call.function.name, args
 
 
 def parse_signal_with_llm(
@@ -231,3 +296,66 @@ def parse_followup_with_llm(
         raw_text=text,
         symbol=args.get("symbol"),
     )
+
+
+def classify_message_with_llm(
+    text: str,
+    message_id: int,
+    reply_to_msg_id: Optional[int],
+    client: Optional[OpenAI] = None,
+    model: str = DEFAULT_MODEL,
+) -> "Optional[Signal | FollowUp]":
+    """MODE TRIAL "LLM-first": SATU panggilan LLM per pesan, dengan KEDUA
+    tool (extract_signal, extract_followup) sekaligus ditawarkan -- model
+    sendiri yang memutuskan pesan ini signal baru, follow-up, atau bukan
+    keduanya (tidak panggil tool sama sekali -> return None, diteruskan
+    sebagai notifikasi/diabaikan seperti biasa, TIDAK ada eksekusi).
+
+    Beda dari parse_signal_with_llm/parse_followup_with_llm (yang masing-
+    masing HANYA dipanggil sebagai fallback setelah regex gagal): fungsi
+    ini dipakai ketika parser.llm_first=true di config, menggantikan regex
+    sebagai pengambil keputusan UTAMA untuk setiap pesan yang masuk."""
+    client = client or _client()
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": COMBINED_SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            tools=[SIGNAL_TOOL, FOLLOWUP_TOOL],
+            tool_choice="auto",
+        )
+    except Exception as e:
+        log.error("MiniMax API error saat classify_message #%s: %s", message_id, e)
+        return None
+
+    result = _first_tool_call(response)
+    if result is None:
+        log.info("LLM tidak memanggil tool apa pun untuk pesan #%s — diabaikan", message_id)
+        return None
+    name, args = result
+
+    if name == "extract_signal":
+        action = args.get("action")
+        symbol = args.get("symbol")
+        sl = args.get("sl")
+        if not action or not symbol or sl is None:
+            log.info("LLM panggil extract_signal utk #%s tapi field wajib kosong — ditolak", message_id)
+            return None
+        entry_range = None
+        if args.get("entry_range_low") is not None and args.get("entry_range_high") is not None:
+            entry_range = (args["entry_range_low"], args["entry_range_high"])
+        return Signal(
+            message_id=message_id, action=action, symbol=symbol,
+            entry=args.get("entry"), entry_range=entry_range, sl=sl, tp=args.get("tp") or [],
+        )
+
+    if name == "extract_followup":
+        return FollowUp(
+            message_id=message_id, reply_to_msg_id=reply_to_msg_id,
+            kinds=args.get("kinds") or [], raw_text=text, symbol=args.get("symbol"),
+        )
+
+    log.error("LLM panggil tool tak dikenal '%s' utk pesan #%s — diabaikan", name, message_id)
+    return None

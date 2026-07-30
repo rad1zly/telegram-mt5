@@ -3,17 +3,23 @@ import sys
 
 sys.path.insert(0, ".")
 
-from src.parser.llm_fallback import parse_followup_with_llm, parse_signal_with_llm  # noqa: E402
+from src.parser.llm_fallback import (  # noqa: E402
+    classify_message_with_llm,
+    parse_followup_with_llm,
+    parse_signal_with_llm,
+)
+from src.parser.schema import FollowUp, Signal  # noqa: E402
 
 
 class FakeFunction:
-    def __init__(self, arguments: dict):
+    def __init__(self, arguments: dict, name: str = "extract_signal"):
         self.arguments = json.dumps(arguments)
+        self.name = name
 
 
 class FakeToolCall:
-    def __init__(self, arguments: dict):
-        self.function = FakeFunction(arguments)
+    def __init__(self, arguments: dict, name: str = "extract_signal"):
+        self.function = FakeFunction(arguments, name=name)
 
 
 class FakeMessage:
@@ -54,8 +60,8 @@ class FakeClient:
         self.chat = FakeChat(FakeCompletions(response, exception))
 
 
-def _response_with_args(args: dict) -> FakeResponse:
-    return FakeResponse([FakeChoice(FakeMessage(tool_calls=[FakeToolCall(args)]))])
+def _response_with_args(args: dict, name: str = "extract_signal") -> FakeResponse:
+    return FakeResponse([FakeChoice(FakeMessage(tool_calls=[FakeToolCall(args, name=name)]))])
 
 
 def _response_no_tool_call() -> FakeResponse:
@@ -154,3 +160,48 @@ def test_followup_rejected_when_no_tool_call():
     client = FakeClient(response=_response_no_tool_call())
     followup = parse_followup_with_llm("semangat pagi semuanya", message_id=7, reply_to_msg_id=None, client=client)
     assert followup is None
+
+
+class TestClassifyMessageWithLLM:
+    """classify_message_with_llm: SATU panggilan LLM per pesan, KEDUA tool
+    ditawarkan sekaligus, model sendiri yang pilih (mode trial 'llm_first')."""
+
+    def test_returns_signal_when_model_calls_extract_signal(self):
+        args = {"action": "BUY", "symbol": "GOLD", "entry": 2350.0, "sl": 2340.0, "tp": [2360.0]}
+        client = FakeClient(response=_response_with_args(args, name="extract_signal"))
+
+        result = classify_message_with_llm("BUY GOLD 2350 SL 2340 TP 2360", message_id=1, reply_to_msg_id=None, client=client)
+
+        assert isinstance(result, Signal)
+        assert result.action == "BUY"
+        assert result.symbol == "GOLD"
+        # kedua tool DIKIRIM sekaligus, bukan cuma satu
+        tool_names = {t["function"]["name"] for t in client.chat.completions.last_kwargs["tools"]}
+        assert tool_names == {"extract_signal", "extract_followup"}
+
+    def test_returns_followup_when_model_calls_extract_followup(self):
+        args = {"kinds": ["partial_close_tp1"], "symbol": "US30"}
+        client = FakeClient(response=_response_with_args(args, name="extract_followup"))
+
+        result = classify_message_with_llm("close partially please", message_id=2, reply_to_msg_id=5, client=client)
+
+        assert isinstance(result, FollowUp)
+        assert result.kinds == ["partial_close_tp1"]
+        assert result.symbol == "US30"
+        assert result.reply_to_msg_id == 5
+
+    def test_returns_none_when_model_calls_no_tool(self):
+        client = FakeClient(response=_response_no_tool_call())
+        result = classify_message_with_llm("weekly results recap, +80% win rate", message_id=3, reply_to_msg_id=None, client=client)
+        assert result is None
+
+    def test_returns_none_when_signal_missing_required_field(self):
+        args = {"action": "BUY", "symbol": "GOLD"}  # sl kosong
+        client = FakeClient(response=_response_with_args(args, name="extract_signal"))
+        result = classify_message_with_llm("BUY GOLD 2350", message_id=4, reply_to_msg_id=None, client=client)
+        assert result is None
+
+    def test_returns_none_on_api_exception_not_crash(self):
+        client = FakeClient(exception=RuntimeError("network down"))
+        result = classify_message_with_llm("BUY GOLD 2350 SL 2340", message_id=5, reply_to_msg_id=None, client=client)
+        assert result is None

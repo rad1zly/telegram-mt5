@@ -3,6 +3,8 @@ import sys
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.insert(0, ".")
 
 import src.main as main_mod  # noqa: E402
@@ -12,13 +14,24 @@ from src.trading import mt5_client  # noqa: E402
 from src.trading.executor import ExecutionResult  # noqa: E402
 from src.trading.symbols import SymbolResolver  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _no_real_llm_calls(monkeypatch):
+    # Test suite TIDAK BOLEH bergantung pada ada-tidaknya MINIMAX_API_KEY
+    # sungguhan di environment developer (config/.env) -- kalau kebetulan
+    # terisi (mis. lagi disiapkan utk trial live), test yang mengandalkan
+    # llm_available()==False bisa diam-diam memanggil API sungguhan (lambat,
+    # berbayar, non-deterministik). Default aman: anggap LLM tidak tersedia,
+    # kecuali test tertentu SENGAJA override balik utk menguji jalur LLM.
+    monkeypatch.setattr(main_mod, "llm_available", lambda: False)
+
 GOLD_ENTRY_TEXT = "GOLD\n\nsell below 4344 - 4345\n\ntp.: 4333, 4323\nsl.: 4348"
 US30_LIVE_UPDATE_TEXT = (
-    "US30 | Live Update\n\nYou may close partially to secure gains "
+    "US30 | Live Update\n\nYou may close partially "
     "and move the stop-loss to the entry."
 )
 CHATTER_TEXT = "selamat pagi semua, semoga profit hari ini"
-GOLD_PARTIAL_CLOSE_ONLY_TEXT = "GOLD | Live Update\n\nHit Target +30 pip. You may close partially to secure gains."
+GOLD_PARTIAL_CLOSE_ONLY_TEXT = "GOLD | Live Update\n\nYou may close partially."
 GOLD_CLOSE_ALL_TEXT = "GOLD | Live Update\n\nHit Profit +110 pip.\n\nWe now prefer to close the position due to the current geopolitical situation."
 
 
@@ -45,7 +58,7 @@ def _make_ctx(tmp_path, **settings_overrides):
         "guards": {"max_price_deviation_pips": 15.0, "max_spread_pips": 30.0},
     }
     for key, value in settings_overrides.items():
-        settings[key].update(value)
+        settings.setdefault(key, {}).update(value)
     return main_mod.Context(settings=settings, db=db, resolver=resolver, broker_symbols=["XAUUSD", "US30"])
 
 
@@ -104,6 +117,98 @@ def test_unrecognized_chatter_is_ignored_without_crash(tmp_path, monkeypatch):
     asyncio.run(main_mod.handle_new_message(ctx, "chan", msg))
 
     assert notified == []
+
+
+class TestLLMFirstMode:
+    """parser.llm_first: true -> classify_message_with_llm jadi pengambil
+    keputusan UTAMA (bukan regex), lihat classify_and_act. Revert cukup set
+    llm_first: false di config, tanpa ubah kode -- diverifikasi test kedua."""
+
+    def test_llm_first_routes_signal_to_entry_handler(self, tmp_path, monkeypatch):
+        ctx = _make_ctx(tmp_path, parser={"llm_first": True})
+        monkeypatch.setattr(main_mod, "llm_available", lambda: True)
+
+        from src.parser.schema import Signal
+        fake_signal = Signal(message_id=20, action="SELL", symbol="GOLD", entry=4344.5, sl=4348.0, tp=[4333.0])
+        monkeypatch.setattr(main_mod, "classify_message_with_llm", lambda *a, **kw: fake_signal)
+
+        notified = []
+        monkeypatch.setattr(notifier, "send", lambda text: notified.append(text))
+        monkeypatch.setattr(mt5_client, "get_symbol_info", lambda s: _fake_symbol_info())
+        monkeypatch.setattr(
+            main_mod, "execute_signal",
+            lambda **kw: ExecutionResult(success=True, detail="ok", ticket=99, lot=0.1, price=4344.5),
+        )
+
+        msg = _fake_msg(20, "teks apa pun, keputusan sepenuhnya dari LLM yg di-mock")
+        asyncio.run(main_mod.handle_new_message(ctx, "chan", msg))
+
+        position = ctx.db.get_open_position_by_symbol("GOLD")
+        assert position is not None
+        assert position["ticket"] == 99
+
+    def test_llm_first_routes_followup_to_followup_handler(self, tmp_path, monkeypatch):
+        ctx = _make_ctx(tmp_path, parser={"llm_first": True})
+        monkeypatch.setattr(main_mod, "llm_available", lambda: True)
+
+        from src.parser.schema import FollowUp
+        fake_followup = FollowUp(message_id=21, reply_to_msg_id=None, kinds=["move_sl_be"], raw_text="x", symbol="GOLD")
+        monkeypatch.setattr(main_mod, "classify_message_with_llm", lambda *a, **kw: fake_followup)
+
+        notified = []
+        monkeypatch.setattr(notifier, "send", lambda text: notified.append(text))
+
+        ctx.db.insert_position({
+            "signal_id": 1, "ticket": 50, "symbol": "GOLD", "direction": "SELL", "lot": 0.1,
+            "open_price": 4344.5, "sl": 4348.0, "tp": 4333.0,
+            "status": "open", "opened_at": "2025-01-01T00:00:00+00:00",
+        })
+        monkeypatch.setattr(mt5_client, "get_position", lambda ticket: SimpleNamespace(volume=0.1))
+        monkeypatch.setattr(
+            mt5_client, "modify_sl_tp",
+            lambda ticket, symbol, sl=None, tp=None: SimpleNamespace(success=True, error=None),
+        )
+
+        msg = _fake_msg(21, "teks apa pun, keputusan sepenuhnya dari LLM yg di-mock")
+        asyncio.run(main_mod.handle_new_message(ctx, "chan", msg))
+
+        assert any("breakeven" in n for n in notified)
+
+    def test_llm_first_no_tool_call_means_no_action(self, tmp_path, monkeypatch):
+        ctx = _make_ctx(tmp_path, parser={"llm_first": True})
+        monkeypatch.setattr(main_mod, "llm_available", lambda: True)
+        monkeypatch.setattr(main_mod, "classify_message_with_llm", lambda *a, **kw: None)
+
+        notified = []
+        monkeypatch.setattr(notifier, "send", lambda text: notified.append(text))
+
+        msg = _fake_msg(22, CHATTER_TEXT)
+        asyncio.run(main_mod.handle_new_message(ctx, "chan", msg))
+
+        assert notified == []
+
+    def test_llm_first_disabled_falls_back_to_regex_path(self, tmp_path, monkeypatch):
+        # parser.llm_first ABSEN dari settings (default) -> harus tetap
+        # pakai regex, classify_message_with_llm TIDAK boleh dipanggil (regex
+        # fallback lama -- parse_signal_with_llm/parse_followup_with_llm --
+        # di-mock juga di sini supaya test ini tidak diam-diam manggil API
+        # sungguhan lewat jalur fallback lama).
+        ctx = _make_ctx(tmp_path)
+        monkeypatch.setattr(main_mod, "llm_available", lambda: True)
+
+        called = []
+        monkeypatch.setattr(main_mod, "classify_message_with_llm", lambda *a, **kw: called.append(1))
+        monkeypatch.setattr(main_mod, "parse_signal_with_llm", lambda *a, **kw: None)
+        monkeypatch.setattr(main_mod, "parse_followup_with_llm", lambda *a, **kw: None)
+
+        notified = []
+        monkeypatch.setattr(notifier, "send", lambda text: notified.append(text))
+
+        msg = _fake_msg(23, CHATTER_TEXT)
+        asyncio.run(main_mod.handle_new_message(ctx, "chan", msg))
+
+        assert called == []
+        assert notified == []
 
 
 def test_followup_applies_move_sl_be_and_partial_close(tmp_path, monkeypatch):

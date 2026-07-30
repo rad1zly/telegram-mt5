@@ -49,7 +49,14 @@ class PriceSeries:
 
     def index_at_or_after(self, dt: datetime) -> Optional[int]:
         """Index candle pertama dengan time >= dt, atau None kalau dt
-        melewati akhir data yang tersedia."""
+        melewati akhir data yang tersedia ATAU dt sebelum data yang
+        tersedia mulai sama sekali (mis. sinyal Januari 2025 sementara
+        data M5 baru mulai Maret 2025) -- tanpa guard ini, bisect_left
+        diam-diam mengembalikan index 0 (candle pertama yg ada), membuat
+        "harga saat itu" untuk sinyal lama terisi dengan harga BERMINGGU-
+        MINGGU kemudian, mencemari simulasi entry-fill/TP/SL-nya."""
+        if not self.candles or dt < self.candles[0].time:
+            return None
         idx = bisect_left(self._times, dt)
         if idx >= len(self.candles):
             return None

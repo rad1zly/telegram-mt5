@@ -47,8 +47,9 @@ from dotenv import load_dotenv
 from telethon import TelegramClient, events
 
 from src.parser.followup import parse_followup_regex
-from src.parser.llm_fallback import parse_followup_with_llm, parse_signal_with_llm
+from src.parser.llm_fallback import classify_message_with_llm, parse_followup_with_llm, parse_signal_with_llm
 from src.parser.patterns import parse_entry_signal
+from src.parser.schema import FollowUp, Signal
 from src.store.db import Database
 from src.tg import notifier
 from src.tg.listener import resolve_channel_entity
@@ -108,6 +109,7 @@ async def handle_entry_signal(ctx: Context, signal, msg) -> None:
             max_price_deviation_pips=ctx.settings["guards"]["max_price_deviation_pips"],
             price_deviation_overrides=ctx.settings["guards"].get("price_deviation_overrides"),
             min_sl_distance_overrides=ctx.settings["guards"].get("min_sl_distance_overrides"),
+            price_offset_overrides=ctx.settings["guards"].get("broker_price_offset_overrides"),
         ),
     )
 
@@ -273,6 +275,28 @@ async def handle_followup(ctx: Context, followup, msg) -> None:
 
 
 async def classify_and_act(ctx: Context, text: str, msg) -> None:
+    # MODE TRIAL "LLM-first" (parser.llm_first: true di config): SATU
+    # panggilan LLM per pesan menggantikan regex sebagai pengambil
+    # keputusan UTAMA (bukan cuma fallback saat regex gagal) -- lihat
+    # classify_message_with_llm. Untuk REVERT ke perilaku regex-first
+    # (default sebelumnya), tinggal set parser.llm_first: false di
+    # config/settings.yaml, tidak perlu ubah kode.
+    if ctx.settings.get("parser", {}).get("llm_first") and llm_available():
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: classify_message_with_llm(text, message_id=msg.id, reply_to_msg_id=msg.reply_to_msg_id),
+        )
+        if isinstance(result, Signal):
+            await handle_entry_signal(ctx, result, msg)
+            return
+        if isinstance(result, FollowUp):
+            await handle_followup(ctx, result, msg)
+            return
+        log.info("Pesan #%s (LLM-first): tidak ada tool dipanggil — diabaikan", msg.id)
+        return
+
+    # --- Path regex-first (default sebelumnya / jalur revert) ---
     signal = parse_entry_signal(text, message_id=msg.id)
     if signal is None and llm_available():
         signal = parse_signal_with_llm(text, message_id=msg.id)

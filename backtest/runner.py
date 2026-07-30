@@ -15,8 +15,9 @@ from typing import Optional
 
 from backtest.engine import SimulatedTrade, SymbolSpec, pnl_usd, resolve_entry_fill, resolve_trade_up_to
 from backtest.price_data import PriceSeries
-from src.parser.followup import parse_followup_regex
+from src.parser.followup import classify_followup_kinds, parse_followup_regex
 from src.parser.patterns import parse_entry_signal
+from src.parser.schema import FollowUp, Signal, apply_price_offset
 from src.trading.risk import calculate_lot, calculate_partial_close_volume
 from src.trading.symbols import SymbolResolver
 
@@ -28,6 +29,8 @@ class BacktestConfig:
     max_price_deviation_pips: float
     price_deviation_overrides: dict = field(default_factory=dict)
     min_sl_distance_overrides: dict = field(default_factory=dict)
+    price_offset_overrides: dict = field(default_factory=dict)  # {canonical: offset} -- lihat
+                                                                  # src/parser/schema.py:apply_price_offset
     partial_close_percent: float = 50.0
     move_sl_to_be_enabled: bool = True
     partial_close_enabled: bool = True
@@ -35,6 +38,21 @@ class BacktestConfig:
     sl_plus_buffer_overrides: dict = field(default_factory=dict)
     tp_index: int = -1  # -1 = TP terakhir/terjauh (perilaku executor.py live saat ini).
                          # 0 = TP pertama/terdekat -- dipakai untuk bandingkan strategi.
+                         # DIABAIKAN kalau tp_r_multiple diisi (lihat bawah).
+    tp_r_multiple: Optional[float] = None  # kalau diisi (mis. 4.0), TP keras = entry +/- N*R,
+                                            # BUKAN dari signal.tp sama sekali -- R = jarak entry ke SL
+                                            # (beda per trade, self-scaling, tidak bergantung angka TP channel).
+    tp_fixed_distance_overrides: dict = field(default_factory=dict)  # {canonical: jarak harga} -- TP keras
+                                            # = entry +/- jarak TETAP per simbol (BUKAN relatif ke SL trade
+                                            # spt tp_r_multiple, BUKAN dari signal.tp/tp_index). Diturunkan dari
+                                            # persentil ke-40 distribusi "gerakan terbaik sebelum SL kena" secara
+                                            # historis per simbol -- terbukti (lewat sweep) hasil PALING baik dari
+                                            # semua strategi TP yang sudah dicoba. Prioritas: tp_r_multiple >
+                                            # tp_fixed_distance_overrides (kalau simbolnya ada) > tp_index (TP
+                                            # channel apa adanya).
+    auto_be_r_multiple: Optional[float] = None  # kalau diisi (mis. 1.0), SL otomatis pindah ke
+                                                  # breakeven begitu harga +N*R -- mekanis, TIDAK
+                                                  # bergantung follow-up message channel sama sekali.
 
 
 def load_signal_rows(path: str) -> list:
@@ -48,6 +66,33 @@ def load_signal_rows(path: str) -> list:
     return rows
 
 
+def _resolve_trade_via_reply_chain(
+    reply_to_msg_id: Optional[int],
+    rows_by_id: dict,
+    trade_by_message_id: dict,
+    max_depth: int = 20,
+) -> Optional[SimulatedTrade]:
+    """Telusuri reply_to_msg_id ke atas sampai ketemu message_id yang sudah
+    terhubung ke sebuah trade (entry ATAU follow-up sebelumnya yang sudah
+    di-resolve). Ini pengait EKSAK (data reply asli dari Telegram, bukan
+    tebakan simbol+waktu-terdekat) -- ditemukan 50%+ pesan di korpus channel
+    ini PUNYA reply_to_msg_id, sebelumnya sama sekali tidak dipakai. Kalau
+    chain putus/tidak ada/tidak nyambung ke trade manapun, return None
+    (caller fallback ke pencocokan simbol+waktu-terdekat yang lama)."""
+    current_id = reply_to_msg_id
+    depth = 0
+    while current_id is not None and depth < max_depth:
+        trade = trade_by_message_id.get(current_id)
+        if trade is not None:
+            return trade
+        parent_row = rows_by_id.get(current_id)
+        if parent_row is None:
+            return None
+        current_id = parent_row.get("reply_to_msg_id")
+        depth += 1
+    return None
+
+
 def run(
     signal_rows: list,
     resolver: SymbolResolver,
@@ -55,9 +100,18 @@ def run(
     price_series: dict,
     symbol_specs: dict,
     config: BacktestConfig,
+    classify_fn=None,
 ):
+    """classify_fn (opsional): pengganti parse_entry_signal/parse_followup_regex
+    -- dipanggil sbg classify_fn(text, message_id, reply_to_msg_id) ->
+    Signal | FollowUp | None. Dipakai utk mode 'llm' (baca dari cache hasil
+    classify_message_with_llm, lihat backtest/llm_source.py) supaya bisa
+    bandingkan hasil sumber sinyal LLM vs regex TANPA duplikasi logika
+    eksekusi/reply-chain di bawah ini. Default None -> regex seperti biasa."""
     trades: list = []
     open_trades_by_symbol: dict = {}
+    trade_by_message_id: dict = {}
+    rows_by_id = {row["message_id"]: row for row in signal_rows}
     skipped = {"symbol_not_covered": 0, "never_filled": 0, "no_sl": 0, "lot_rejected": 0}
 
     for row in signal_rows:
@@ -69,7 +123,16 @@ def run(
             continue
         event_time = datetime.fromisoformat(date_str)
 
-        signal = parse_entry_signal(text, message_id=row["message_id"])
+        if classify_fn is not None:
+            classified = classify_fn(text, row["message_id"], row.get("reply_to_msg_id"))
+            signal = classified if isinstance(classified, Signal) else None
+            preclassified_followup = classified if isinstance(classified, FollowUp) else None
+            if signal is None and preclassified_followup is None:
+                continue
+        else:
+            signal = parse_entry_signal(text, message_id=row["message_id"])
+            preclassified_followup = None
+
         if signal is not None:
             canonical = resolver.canonical_of(signal.symbol)
             if canonical is None or canonical not in price_series:
@@ -78,6 +141,9 @@ def run(
 
             series = price_series[canonical]
             spec = symbol_specs[canonical]
+
+            offset = config.price_offset_overrides.get(canonical, 0.0)
+            signal = apply_price_offset(signal, offset)
 
             if signal.sl is None:
                 skipped["no_sl"] += 1
@@ -105,43 +171,97 @@ def run(
                 skipped["lot_rejected"] += 1
                 continue
 
+            r_value = abs(fill_price - signal.sl)
+            fixed_distance = config.tp_fixed_distance_overrides.get(canonical)
+            if config.tp_r_multiple is not None:
+                tp_price = (
+                    fill_price + config.tp_r_multiple * r_value
+                    if signal.action == "BUY"
+                    else fill_price - config.tp_r_multiple * r_value
+                )
+            elif fixed_distance is not None:
+                tp_price = fill_price + fixed_distance if signal.action == "BUY" else fill_price - fixed_distance
+            else:
+                tp_price = signal.tp[config.tp_index] if signal.tp else fill_price
+
             trade = SimulatedTrade(
                 signal_message_id=row["message_id"], canonical_symbol=canonical,
                 direction=signal.action, lot=lot_result.lot,
                 entry_price=fill_price, entry_time=series.candles[fill_idx].time,
-                sl=signal.sl, tp=(signal.tp[config.tp_index] if signal.tp else fill_price), kind=kind,
+                sl=signal.sl, tp=tp_price, kind=kind, r_value=r_value,
             )
             trade._last_resolved_index = fill_idx - 1
             trades.append(trade)
             open_trades_by_symbol.setdefault(canonical, []).append(trade)
+            trade_by_message_id[row["message_id"]] = trade
             continue
 
-        followup = parse_followup_regex(text, message_id=row["message_id"], reply_to_msg_id=row.get("reply_to_msg_id"))
-        if followup is None or not followup.kinds or followup.symbol is None:
-            continue
-
-        canonical = resolver.canonical_of(followup.symbol)
-        if canonical is None or canonical not in price_series:
-            continue
-
-        series = price_series[canonical]
-        spec = symbol_specs[canonical]
-        candidates = sorted(open_trades_by_symbol.get(canonical, []), key=lambda t: t.entry_time, reverse=True)
-
+        if classify_fn is not None:
+            followup = preclassified_followup  # dijamin bukan None (lihat guard di atas)
+        else:
+            followup = parse_followup_regex(text, message_id=row["message_id"], reply_to_msg_id=row.get("reply_to_msg_id"))
         target_trade = None
-        for t in candidates:
-            resolve_trade_up_to(t, series, event_time)
-            if t.is_open:
-                target_trade = t
-                break
-        if target_trade is None:
-            continue
+        kinds: list = []
 
-        if "move_sl_be" in followup.kinds and not target_trade.be_moved and config.move_sl_to_be_enabled:
+        if followup is not None:
+            # Header 'Live Update' + simbol ketemu di teks sendiri (regex),
+            # ATAU hasil classify_fn (LLM) apa pun bentuk teksnya.
+            if not followup.kinds:
+                continue
+            kinds = followup.kinds
+            # Prioritas 1: ikuti reply_to_msg_id ke atas -- pengait EKSAK dari
+            # Telegram sendiri, lebih presisi dari tebakan simbol+waktu-terdekat.
+            target_trade = _resolve_trade_via_reply_chain(row.get("reply_to_msg_id"), rows_by_id, trade_by_message_id)
+            if target_trade is not None:
+                canonical = target_trade.canonical_symbol
+                series = price_series[canonical]
+                spec = symbol_specs[canonical]
+                resolve_trade_up_to(target_trade, series, event_time, auto_be_r_multiple=config.auto_be_r_multiple)
+                if not target_trade.is_open:
+                    target_trade = None
+            # Prioritas 2 (fallback): pencocokan simbol+waktu-terdekat yang lama.
+            if target_trade is None:
+                if followup.symbol is None:
+                    continue
+                canonical = resolver.canonical_of(followup.symbol)
+                if canonical is None or canonical not in price_series:
+                    continue
+                series = price_series[canonical]
+                spec = symbol_specs[canonical]
+                candidates = sorted(open_trades_by_symbol.get(canonical, []), key=lambda t: t.entry_time, reverse=True)
+                for t in candidates:
+                    resolve_trade_up_to(t, series, event_time, auto_be_r_multiple=config.auto_be_r_multiple)
+                    if t.is_open:
+                        target_trade = t
+                        break
+                if target_trade is None:
+                    continue
+        else:
+            # TIDAK ADA header 'Live Update' sama sekali (mis. msg 2098 di
+            # korpus asli: "So Now you can SELL it from here..." -- simbol
+            # cuma disebut di pesan SEBELUMNYA dalam thread). Satu-satunya
+            # cara mengenali ini sebagai follow-up: reply_to_msg_id-nya
+            # menunjuk (langsung/berantai) ke trade yang sudah kita kenal.
+            target_trade = _resolve_trade_via_reply_chain(row.get("reply_to_msg_id"), rows_by_id, trade_by_message_id)
+            if target_trade is None:
+                continue
+            canonical = target_trade.canonical_symbol
+            series = price_series[canonical]
+            spec = symbol_specs[canonical]
+            resolve_trade_up_to(target_trade, series, event_time, auto_be_r_multiple=config.auto_be_r_multiple)
+            if not target_trade.is_open:
+                continue
+            kinds = classify_followup_kinds(text)
+            if not kinds:
+                continue
+
+        trade_by_message_id[row["message_id"]] = target_trade
+
+        if "move_sl_be" in kinds and not target_trade.be_moved and config.move_sl_to_be_enabled:
             target_trade.sl = target_trade.entry_price
             target_trade.be_moved = True
 
-        if "partial_close_tp1" in followup.kinds and not target_trade.tp1_hit and config.partial_close_enabled:
+        if "partial_close_tp1" in kinds and not target_trade.tp1_hit and config.partial_close_enabled:
             pc = calculate_partial_close_volume(
                 position_lot=target_trade.remaining_lot, percent=config.partial_close_percent,
                 volume_step=spec.volume_step, volume_min=spec.volume_min,
@@ -172,7 +292,7 @@ def run(
                     target_trade.exit_reason = "partial_close_full"
                 target_trade.tp1_hit = True
 
-        if "close_all" in followup.kinds and target_trade.is_open and config.close_all_enabled:
+        if "close_all" in kinds and target_trade.is_open and config.close_all_enabled:
             idx = series.index_at_or_after(event_time)
             approx_price = series.candles[idx].open if idx is not None else target_trade.entry_price
             target_trade.realized_pnl_usd += pnl_usd(target_trade, approx_price, target_trade.remaining_lot, spec)
@@ -186,7 +306,7 @@ def run(
             continue
         last_time = series.candles[-1].time
         for t in open_trades_by_symbol.get(canonical, []):
-            resolve_trade_up_to(t, series, last_time)
+            resolve_trade_up_to(t, series, last_time, auto_be_r_multiple=config.auto_be_r_multiple)
 
     return trades, skipped
 

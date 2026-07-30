@@ -1,4 +1,14 @@
 mode: demo
+parser:
+  # TRIAL (2026-07-30): SETIAP pesan (entry maupun follow-up) diputuskan
+  # oleh SATU panggilan LLM (MiniMax), menggantikan regex sebagai pengambil
+  # keputusan utama -- bukan cuma fallback. Alasan: user membaca sendiri
+  # ratusan pesan channel ini secara manual dan banyak yang profitable,
+  # sementara regex (walau sudah dites ~97% akurat lewat sampling manual)
+  # tetap butuh puluhan iterasi aturan utk menangkap nuansa bahasa.
+  # REVERT: set ke false, regex jadi pengambil keputusan utama lagi
+  # (LLM cuma fallback saat regex gagal total), TANPA perlu ubah kode.
+  llm_first: true
 telegram:
   channel: '-1002354707631'
   session_name: session/user
@@ -33,6 +43,16 @@ guards:
     GBPJPY: 0.14
     AUDUSD: 0.0012
     USOIL: 0.23
+  # Koreksi offset harga (satuan HARGA) kalau broker kita punya selisih
+  # KONSISTEN dan SATU ARAH dari referensi harga channel -- ditemukan lewat
+  # perbandingan manual live (2026-07-30): broker selalu lebih TINGGI ~$10
+  # di US30, ~$7 di NAS100. Entry/SL/TP dari signal digeser paralel sebesar
+  # ini sebelum dipakai (lihat src/parser/schema.py:apply_price_offset).
+  # BARU 2 simbol yang terverifikasi -- tambah simbol lain kalau memang
+  # terbukti ada pola serupa, jangan sekadar diasumsikan sama.
+  broker_price_offset_overrides:
+    US30: 10.0
+    NAS100: 7.0
 followup:
   move_sl_to_be: true
   partial_close_tp1: true
@@ -57,6 +77,19 @@ followup:
     GBPJPY: 0.028
     AUDUSD: 0.00024
     USOIL: 0.046
+# HANYA dipakai tools/run_backtest*.py -- BELUM memengaruhi live/executor.py.
+# Target TP tetap per simbol (bukan dari signal.tp channel, bukan relatif ke
+# SL trade) -- diturunkan dari persentil ke-40 distribusi "gerakan terbaik
+# sebelum SL kena" secara historis per simbol. Terbukti lewat sweep sebagai
+# strategi TP PALING PROFITABLE dari semua yang sudah dicoba (TP channel
+# apa adanya, R-multiple, macam-macam persentil). Lihat backtest/runner.py:
+# BacktestConfig.tp_fixed_distance_overrides.
+backtest:
+  tp_fixed_distance_overrides:
+    XAUUSD: 4.34
+    NAS100: 40.38
+    US30: 43.25
+    SP500: 4.64
 symbols:
   aliases:
     XAUUSD:

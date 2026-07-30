@@ -12,7 +12,7 @@ broker.
 from dataclasses import dataclass
 from typing import Optional
 
-from src.parser.schema import Signal
+from src.parser.schema import Signal, apply_price_offset
 from src.trading import mt5_client
 from src.trading.risk import calculate_lot
 from src.trading.symbols import SymbolResolver
@@ -66,6 +66,7 @@ def execute_signal(
     max_price_deviation_pips: float = 15.0,
     price_deviation_overrides: Optional[dict] = None,
     min_sl_distance_overrides: Optional[dict] = None,
+    price_offset_overrides: Optional[dict] = None,
 ) -> ExecutionResult:
     """price_deviation_overrides: {canonical_symbol: pips} — satu angka
     'pips' global TIDAK bisa cocok untuk semua instrumen sekaligus (mis.
@@ -78,7 +79,14 @@ def execute_signal(
     (mis. channel nulis SL yang jaraknya cuma 1 poin dari entry padahal
     biasanya puluhan poin). Diturunkan dari median jarak SL riwayat
     channel per simbol, bukan angka global — skala harga tiap instrumen
-    beda jauh (GOLD vs indeks vs forex 4 digit)."""
+    beda jauh (GOLD vs indeks vs forex 4 digit).
+
+    price_offset_overrides: {canonical_symbol: offset harga} — koreksi
+    kalau broker kita punya selisih harga KONSISTEN dan SATU ARAH dari
+    referensi harga channel (ditemukan lewat perbandingan manual live,
+    mis. broker selalu ~$10 lebih tinggi di US30). Entry/SL/TP dari signal
+    digeser paralel sebesar offset ini SEBELUM dipakai hitung lot/order,
+    supaya order match maksud channel, bukan angka mentahnya."""
     if signal.sl is None:
         return ExecutionResult(success=False, detail="Signal tidak punya SL — ditolak, tidak bisa hitung risiko")
 
@@ -86,6 +94,9 @@ def execute_signal(
     if not resolved.ok:
         return ExecutionResult(success=False, detail=f"Simbol ditolak: {resolved.error}")
     broker_symbol = resolved.matched
+
+    offset = (price_offset_overrides or {}).get(resolved.canonical, 0.0)
+    signal = apply_price_offset(signal, offset)
 
     effective_deviation_pips = (price_deviation_overrides or {}).get(
         resolved.canonical, max_price_deviation_pips
