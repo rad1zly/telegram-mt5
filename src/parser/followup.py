@@ -105,7 +105,14 @@ TARGET_REACHED_RE = re.compile(
     r"|\b(?:first|second|third|final|1st|2nd|3rd)\s+target\s+hit\b"
     r"|\breached\s+(?:our|the)\s+(?:first|second|third|final)?\s*target\b"
     r"|\+\s*\d+(?:\.\d+)?\s*pips?\b[^.\n]{0,30}\bprofit\b"
-    r"|\bin\s+profit\b",
+    r"|\bin\s+profit\b"
+    # Bentuk paling ringkas yang sering dipakai channel dan sempat lolos:
+    # "Hit +140 PIP✅", "delivering around +40 pip" -- angka pip POSITIF
+    # tanpa kata "profit" di dekatnya sama sekali. Ditemukan saat memeriksa
+    # 14 hari terakhir korpus (#6947, #6915).
+    r"|\bhit\s*\+\s*\d+(?:\.\d+)?\s*pips?\b"
+    r"|\bdeliver(?:ing|ed)\b[^.\n]{0,20}\+\s*\d+(?:\.\d+)?\s*pips?\b"
+    r"|\breached\b[^.\n]{0,60}?\baround\s+\+?\s*\d+(?:\.\d+)?\s*pips?\b",
     re.IGNORECASE,
 )
 
@@ -137,7 +144,12 @@ CLOSE_ALL_RE = re.compile(
     # dibatasi ke "the position"/"the trade"/"it" persis (bukan pola
     # fleksibel simbol-nyempil di atas) supaya tidak salah tangkap "closed"
     # dalam konteks candle (mis. "closed a 15min candle below X").
-    rf"|\bclosed\s+(?:the\s+position|the\s+trade|it)\b(?!\s+partial)",
+    rf"|\bclosed\s+(?:the\s+position|the\s+trade|it)\b(?!\s+partial)"
+    # "Close this order at around entry or small loss" -- channel menyebut
+    # ORDER, bukan "position/trade". Sempat lolos total: instruksi tutup
+    # yang sangat eksplisit tapi bot DIAM, jadi posisinya dibiarkan sampai
+    # kena SL. Ditemukan saat memeriksa 14 hari terakhir korpus (#6902).
+    rf"|\bclos(?:e|ing)\s+(?:this|the|your)\s+orders?\b(?!\s+partial)",
     re.IGNORECASE,
 )
 

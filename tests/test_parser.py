@@ -2,7 +2,7 @@ import sys
 
 sys.path.insert(0, ".")
 
-from src.parser.followup import parse_followup_regex  # noqa: E402
+from src.parser.followup import classify_followup_kinds, parse_followup_regex  # noqa: E402
 from src.parser.patterns import parse_entry_signal  # noqa: E402
 
 
@@ -477,3 +477,37 @@ def test_followup_close_the_positions_plural_with_article():
     followup = parse_followup_regex(text, message_id=1036, reply_to_msg_id=None)
     assert followup is not None
     assert followup.kinds == ["close_all"]
+
+
+# --- Instruksi channel yang sempat LOLOS TOTAL (ditemukan saat memeriksa
+# 14 hari terakhir korpus, meniru kondisi live) ---
+
+def test_close_this_order_is_recognized_as_close_all():
+    """#6902: "Close this order at around entry or small loss" -- instruksi
+    tutup yang sangat eksplisit tapi bot DIAM, jadi posisi dibiarkan sampai
+    kena SL. Channel menyebut ORDER, bukan position/trade."""
+    text = ("USNAS100 | LIVE UPDATE\n\nClose this order at around entry or small loss. "
+            "There is a risk that the price may reverse and make a corrective move.")
+    assert "close_all" in classify_followup_kinds(text)
+
+
+def test_bare_positive_pip_announcements_are_recognized_as_target_reached():
+    """#6947 & #6915: channel mengumumkan hasil dgn angka pip POSITIF tanpa
+    kata "profit" sama sekali. Dulu lolos total."""
+    assert "target_reached" in classify_followup_kinds(
+        "GOLD | Live Update\n\nBearish Momentum Continues Hit +140 PIP✅\n\n"
+        "The market has now reached our first downside target at 4046."
+    )
+    assert "target_reached" in classify_followup_kinds(
+        "GOLD | New Update\n\nThe price reached the 4116 level, delivering around +40 pip."
+    )
+
+
+def test_hit_stop_loss_announcement_stays_silent():
+    """Pengumuman "Hit Stop Loss" TIDAK boleh memicu aksi apa pun: posisi
+    kita sudah ditutup broker lewat SL secara otomatis. Ini juga menjaga
+    agar pelonggaran deteksi pip di atas tidak salah membaca kerugian
+    sebagai target tercapai (dua-duanya memakai kata "hit")."""
+    assert classify_followup_kinds(
+        "GOLD | Update\n\nHit Stop Loss -40 Pip❌\n\nThe price reversed and reached the 4097 level."
+    ) == []
