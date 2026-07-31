@@ -175,7 +175,17 @@ def run(
             if not kinds:
                 continue
 
+        # Rantai reply tetap dicatat walau aksinya nanti dilewati, supaya
+        # follow-up BERIKUTNYA (yang waktunya sudah sah) tetap bisa
+        # menemukan trade ini lewat pesan perantara.
         trade_by_message_id[row["message_id"]] = target_trade
+
+        # Follow-up yang datang SEBELUM entry benar-benar terisi tidak boleh
+        # mengubah apa pun: posisinya belum ada. Lihat penjelasan lengkap di
+        # runner.py -- penjagaan yang sama, karena entry pending sering baru
+        # terisi lama setelah sinyalnya diposting.
+        if event_time < target_trade.entry_time:
+            continue
 
         if "move_sl_be" in kinds and not target_trade.be_moved and config.move_sl_to_be_enabled:
             target_trade.sl = target_trade.entry_price

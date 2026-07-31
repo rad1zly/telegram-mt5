@@ -91,30 +91,30 @@ followup:
 # Target TP tetap per simbol (bukan dari signal.tp channel, bukan relatif ke
 # SL trade). Lihat backtest/runner.py: BacktestConfig.tp_fixed_distance_overrides.
 #
-# ASAL ANGKA: persentil ke-20 distribusi MFE ("gerakan terbaik sebelum SL
-# kena") per simbol, dihitung ulang dari data yang zona waktunya SUDAH
-# dikoreksi penuh. Dipilih lewat sweep 14 kandidat (tools/sweep_tp.py):
-# TP channel terjauh/terdekat, R-multiple 1-4R, dan MFE p5..p70.
+# ASAL ANGKA: persentil ke-30 distribusi MFE ("gerakan terbaik sebelum SL
+# kena") per simbol, dari sweep tools/sweep_tp.py.
 #
-# KENAPA p20, bukan yang P/L-nya paling tinggi:
-#   TP channel terjauh    P/L $10,716  WR 46.8%  PF 1.70  maxDD 70.6%
-#   MFE p20 (dipakai)     P/L  $8,939  WR 73.2%  PF 2.06  maxDD 21.4%
-# TP channel unggul total dolar tapi drawdown-nya 3x lebih dalam -- pada
-# modal kecil itu bedanya antara bertahan dan margin call.
+# ⚠️ PERINGATAN JUJUR TENTANG KEKUATAN EDGE-NYA:
+# Angka di bawah adalah yang TERBAIK dari 14 kandidat, tapi "terbaik" di
+# sini cuma P/L $1,267 dengan profit factor 1.11 dan max drawdown 38%.
+# PF 1.11 artinya tiap $1 rugi cuma diimbangi $1.11 untung -- margin
+# setipis itu gampang habis oleh spread/slippage/komisi yang belum
+# dimodelkan backtest ini. JANGAN diperlakukan sebagai edge yang terbukti.
 #
-# p20 juga TERBUKTI puncak sungguhan, bukan ujung range: p5/p10/p15 di
-# bawahnya dan p25/p30 di atasnya sama-sama lebih jelek ($/1%DD).
+# Angka sebelumnya (p20, diklaim P/L $8,939 / PF 2.06) TERNYATA ARTEFAK
+# BUG: follow-up yang datang SEBELUM entry pending terisi tetap dieksekusi
+# memakai harga dari sebelum entry, lalu P/L-nya dihitung terhadap
+# entry_price yang baru terjadi belakangan. Setelah bug itu diperbaiki
+# (lihat runner.py, penjagaan event_time < entry_time), P/L jatuh dari
+# $8,939 ke $303. Semua kesimpulan TP sebelum perbaikan itu tidak valid.
 #
-# ROBUSTNESS (diuji ulang di 3 sub-periode terpisah, bukan cuma total):
-# keluarga TP ketat (p15/p20) menang win-rate 3/3 sub-periode dan profit
-# factor 3/3 -- konsisten, bukan kebetulan satu periode. JUJURNYA: angka
-# lama (p40-an) justru menang max-drawdown 2/3 sub-periode. p20 tetap
-# dipilih karena PF/WR (agregat SEMUA trade) lebih bisa dipercaya daripada
-# max-DD yang cuma satu titik terburuk dan sangat berisik.
+# Sebagian besar kandidat lain justru MENGHABISKAN AKUN pada modal $800
+# (TP channel terjauh: drawdown 179%). Jadi pilihan di bawah lebih tepat
+# dibaca sebagai "paling tidak buruk", bukan "terbukti menguntungkan".
 #
 # Hitung ulang kalau data/broker berubah: .venv/bin/python tools/sweep_tp.py
-# CATATAN: angka ini diturunkan dari candle M5 (histori sejak Mar 2025).
-# Kalau punya data TICK yang lebih panjang, sweep ulang di sana.
+# CATATAN: diturunkan dari candle M5 (histori sejak Mar 2025). Kalau punya
+# data TICK yang lebih panjang, sweep ulang di sana.
 backtest:
   # Zona waktu server broker untuk file M5/tick hasil export MT5. Timestamp
   # di file itu WAKTU SERVER, bukan UTC -- sementara timestamp pesan Telegram
@@ -144,10 +144,10 @@ backtest:
   # Diabaikan selama server_timezone di atas terisi.
   server_utc_offset_hours: 3.0
   tp_fixed_distance_overrides:
-    XAUUSD: 2.36
-    NAS100: 12.75
-    US30: 20.0
-    SP500: 2.62
+    XAUUSD: 3.71
+    NAS100: 24.5
+    US30: 31.95
+    SP500: 3.88
 symbols:
   aliases:
     XAUUSD:

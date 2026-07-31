@@ -459,3 +459,54 @@ def test_load_signal_rows_filters_by_since_and_until(tmp_path):
     assert [r["message_id"] for r in load_signal_rows(str(path), since="2025-03-03")] == [2, 3]
     assert [r["message_id"] for r in load_signal_rows(str(path), until="2025-03-03")] == [1]
     assert [r["message_id"] for r in load_signal_rows(str(path), since="2025-02-01", until="2025-06-01")] == [2]
+
+
+def test_followup_before_pending_entry_fills_is_ignored():
+    """BUG NYATA yang sempat menggelembungkan seluruh hasil backtest:
+    entry pending (BUY_STOP/LIMIT) bisa baru terisi berhari-hari setelah
+    sinyalnya diposting, sementara channel terus mengirim follow-up di
+    antaranya. Follow-up itu dulu tetap dieksekusi memakai harga dari
+    SEBELUM entry ada, lalu P/L-nya dihitung terhadap entry_price yang baru
+    terjadi belakangan -- membandingkan dua periode berbeda. Nyatanya
+    sempat memproduksi kerugian $388 pada trade yang risikonya $30.
+
+    Di sini: sinyal SELL LIMIT jauh di atas harga, follow-up 'close'
+    datang 5 menit kemudian, entry baru terisi 30 menit setelah itu.
+    Follow-up TIDAK boleh menyentuh trade yang belum ada.
+    """
+    rows = [
+        {
+            "message_id": 1, "date_utc": T0.isoformat(),
+            # SELL LIMIT di 4400 -- jauh di atas harga awal (4344)
+            "text": "GOLD\n\nsell below 4400\n\ntp.: 4380\nsl.: 4410",
+            "reply_to_msg_id": None,
+        },
+        {
+            "message_id": 2, "date_utc": (T0 + timedelta(minutes=5)).isoformat(),
+            "text": "GOLD | Live Update\n\nWe now prefer to close the position.",
+            "reply_to_msg_id": 1,
+        },
+    ]
+    series = _series([
+        (0, 4344.0, 4344.5, 4343.5, 4344.2),    # sinyal: harga masih jauh di bawah 4400
+        (5, 4344.0, 4344.5, 4343.5, 4344.2),    # follow-up 'close' tiba -- entry BELUM terisi
+        (35, 4399.0, 4401.0, 4398.5, 4400.5),   # baru di sini harga menyentuh 4400 -> terisi
+        (40, 4400.0, 4411.0, 4399.0, 4410.5),   # lalu kena SL 4410
+    ])
+
+    config = BacktestConfig(
+        risk_usd=50.0, max_lot_cap=5.0, max_price_deviation_pips=100.0,
+        price_deviation_overrides={"XAUUSD": 100.0}, min_sl_distance_overrides={},
+        close_all_enabled=True,
+    )
+    trades, _ = run(
+        signal_rows=rows, resolver=SymbolResolver(ALIASES), broker_symbols=["XAUUSD+"],
+        price_series={"XAUUSD": series}, symbol_specs={"XAUUSD": _spec()}, config=config,
+    )
+
+    assert len(trades) == 1
+    trade = trades[0]
+    # close_all dari pesan #2 TIDAK boleh dipakai: posisinya belum ada saat itu
+    assert trade.exit_reason != "close_all"
+    # exit tidak boleh mendahului entry -- itu tanda P/L dihitung lintas periode
+    assert trade.exit_time >= trade.entry_time
