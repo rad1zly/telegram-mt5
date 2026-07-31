@@ -184,12 +184,28 @@ def test_entry_symbol_line_with_trailing_empty_pipe():
     assert signal.symbol == "GOLD"
 
 
-def test_entry_symbol_line_with_real_decoration_still_rejected():
-    # "GOLD | Bullish Setup" — dekorasi SUNGGUHAN, tetap ditolak regex
-    # (diserahkan ke LLM fallback, bukan ditebak)
+def test_entry_with_decorated_header_is_parsed_from_body():
+    # Dulu ditolak dgn alasan "dekorasi -> serahkan ke LLM". Itu keliru:
+    # backtest tidak memakai LLM sama sekali, jadi sinyal BAKU pun hilang
+    # cuma karena judulnya dihias. Terukur 63 sinyal nyata di korpus
+    # kembali terbaca setelah ini diperbaiki (mis. #6733).
+    # Hiasan itu deskripsi; yang menentukan tetap ISI pesan.
     text = "GOLD | Bullish Setup\n\nBuy Above 4342\nTarget 4355 - 4362\nstop loss 4340"
     signal = parse_entry_signal(text, message_id=1009)
-    assert signal is None
+    assert signal is not None
+    assert signal.action == "BUY"
+    assert signal.symbol == "GOLD"
+    assert signal.entry == 4342.0
+    assert signal.sl == 4340.0
+    assert signal.tp == [4355.0, 4362.0]
+
+
+def test_decorated_header_without_real_signal_body_still_rejected():
+    """Penjaga supaya pelonggaran header di atas tidak jadi kelewat longgar:
+    tanpa arah/SL/target yang jelas di badan pesan, tetap ditolak."""
+    assert parse_entry_signal("GOLD | Bullish Setup\n\nMarket looks strong today.", message_id=1) is None
+    # ada arah tapi TANPA SL -> tetap ditolak (SL wajib, tidak boleh ditebak)
+    assert parse_entry_signal("GOLD | Bullish Setup\n\nBuy Above 4342\nTarget 4355", message_id=2) is None
 
 
 def test_followup_header_with_arbitrary_word_before_update():

@@ -116,9 +116,18 @@ def parse_entry_signal(text: str, message_id: int) -> Optional[Signal]:
         if SYMBOL_RE.match(first_token):
             symbol_candidate, remainder = first_token, rest.strip()
 
-    if remainder and not (DIRECTION_RE.search(remainder) or MARKET_DIRECTION_RE.search(remainder)):
-        return None
-
+    # Sisa header setelah simbol ("- Bearish Continuation!", "| Bullish
+    # Momentum (RISKY & Volatile)") SENGAJA TIDAK lagi dijadikan alasan
+    # menolak. Dulu begitu, dengan alasan "header dekoratif -> serahkan ke
+    # LLM fallback" -- tapi backtest tidak memakai LLM sama sekali, jadi
+    # sinyal berformat BAKU pun hilang diam-diam hanya karena judulnya
+    # dihias. Terukur di korpus: 420 pesan punya arah+SL+target tapi tidak
+    # terparse, dan contoh seperti "USNAS100 - Bearish Continuation!" langsung
+    # terparse sempurna begitu hiasannya dibuang.
+    #
+    # Hiasan itu deskripsi, bukan data. Yang menentukan tetap ISI pesan:
+    # arah, SL, dan target harus tetap ditemukan di bawah -- kalau tidak,
+    # pesan ini tetap ditolak seperti biasa.
     if not SYMBOL_RE.match(symbol_candidate):
         return None
     symbol = symbol_candidate.upper()
