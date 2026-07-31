@@ -16,14 +16,9 @@ risk:
   usd_per_trade: 30.0
   max_lot_cap: 5.0
   max_trades_per_day: 20
-  # AKTIF sejak audit: kalau rugi TEREALISASI hari ini (UTC) menembus angka
-  # ini, entry BARU ditolak sampai pergantian hari. Posisi yang sedang jalan
-  # TIDAK disentuh. Angkanya positif; dibandingkan terhadap P/L negatif.
-  # Sumbernya riwayat deal broker (sudah termasuk swap & komisi), difilter
-  # magic number bot -- trading manual di akun sama tidak ikut terhitung.
-  # Kalau riwayat tidak bisa diambil, guard MELEWATKAN (fail-open) supaya
-  # koneksi bermasalah tidak memblokir trading selamanya.
-  daily_loss_cap_usd: 200.0
+  # TIDAK ADA batas rugi harian -- keputusan user: risiko dikendalikan
+  # murni lewat usd_per_trade yang tetap $30 per trade, tidak perlu
+  # lapisan cap harian di atasnya.
 guards:
   max_price_deviation_pips: 15
   # BELUM AKTIF: tidak ada kode yang membaca ini. Dibiarkan sebagai
@@ -91,30 +86,31 @@ followup:
 # Target TP tetap per simbol (bukan dari signal.tp channel, bukan relatif ke
 # SL trade). Lihat backtest/runner.py: BacktestConfig.tp_fixed_distance_overrides.
 #
-# ASAL ANGKA: persentil ke-30 distribusi MFE ("gerakan terbaik sebelum SL
-# kena") per simbol, dari sweep tools/sweep_tp.py.
+# ASAL ANGKA: persentil ke-30 distribusi MFE, dari tools/sweep_tp.py.
 #
-# ⚠️ PERINGATAN JUJUR TENTANG KEKUATAN EDGE-NYA:
-# Angka di bawah adalah yang TERBAIK dari 14 kandidat, tapi "terbaik" di
-# sini cuma P/L $1,267 dengan profit factor 1.11 dan max drawdown 38%.
-# PF 1.11 artinya tiap $1 rugi cuma diimbangi $1.11 untung -- margin
-# setipis itu gampang habis oleh spread/slippage/komisi yang belum
-# dimodelkan backtest ini. JANGAN diperlakukan sebagai edge yang terbukti.
+# ⚠️⚠️ STATUS SEKARANG: BELUM ADA SATU PUN SETELAN YANG TERBUKTI UNTUNG.
+# Setelah semantik entry diperbaiki (lihat mt5_client.decide_order_kind:
+# "sell below X" itu SYARAT -> MARKET, bukan limit), backtest M5 dengan
+# angka di bawah menghasilkan P/L -$2,511 dan profit factor 0.77.
+# HAMPIR SEMUA kandidat TP lain juga rugi dan MENGHABISKAN AKUN $800.
+# Yang paling tidak buruk cuma "TP channel terjauh" di PF 1.02 -- praktis
+# impas, bukan edge.
 #
-# Angka sebelumnya (p20, diklaim P/L $8,939 / PF 2.06) TERNYATA ARTEFAK
-# BUG: follow-up yang datang SEBELUM entry pending terisi tetap dieksekusi
-# memakai harga dari sebelum entry, lalu P/L-nya dihitung terhadap
-# entry_price yang baru terjadi belakangan. Setelah bug itu diperbaiki
-# (lihat runner.py, penjagaan event_time < entry_time), P/L jatuh dari
-# $8,939 ke $303. Semua kesimpulan TP sebelum perbaikan itu tidak valid.
+# Angka di bawah DIPERTAHANKAN semata sebagai titik awal yang masuk akal,
+# BUKAN karena terbukti. JANGAN dipakai live sebelum ada bukti yang lebih
+# baik.
 #
-# Sebagian besar kandidat lain justru MENGHABISKAN AKUN pada modal $800
-# (TP channel terjauh: drawdown 179%). Jadi pilihan di bawah lebih tepat
-# dibaca sebagai "paling tidak buruk", bukan "terbukti menguntungkan".
+# YANG BELUM DIVERIFIKASI dan bisa mengubah kesimpulan:
+#  - Backtest ini pakai candle M5. Kalau SL dan TP kena di candle yang
+#    SAMA, engine selalu mengasumsikan SL duluan (konservatif). Terukur
+#    6.7% dari semua exit-SL -- nyata, tapi kemungkinan besar tidak cukup
+#    membalik kerugian sebesar ini. Data TICK bisa memutuskannya pasti.
+#  - Data M5 di repo cuma sejak Mar 2025 (100rb baris terakhir). Data tick
+#    user mulai Jan 2025, dua bulan lebih panjang.
+#  - Spread/slippage/komisi BELUM dimodelkan sama sekali -- artinya hasil
+#    sungguhan kemungkinan LEBIH BURUK lagi, bukan lebih baik.
 #
-# Hitung ulang kalau data/broker berubah: .venv/bin/python tools/sweep_tp.py
-# CATATAN: diturunkan dari candle M5 (histori sejak Mar 2025). Kalau punya
-# data TICK yang lebih panjang, sweep ulang di sana.
+# Sweep ulang di data tick: .venv/bin/python tools/sweep_tp.py --ticks
 backtest:
   # Zona waktu server broker untuk file M5/tick hasil export MT5. Timestamp
   # di file itu WAKTU SERVER, bukan UTC -- sementara timestamp pesan Telegram

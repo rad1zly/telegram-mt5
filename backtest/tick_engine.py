@@ -63,16 +63,24 @@ def resolve_entry_fill_tick(
     if kind == "MARKET":
         return start_idx, current_price, kind
 
-    # Pending order -- BUY (STOP maupun LIMIT) dicek dgn ASK, SELL dgn BID.
+    # Pending order (STOP) -- BUY dicek dgn ASK, SELL dgn BID. Hanya berlaku
+    # sampai akhir hari sinyalnya, alasan sama persis dgn engine.py candle:
+    # channel kirim sinyal baru tiap hari, pending yang belum tersentuh
+    # sampai pergantian hari sudah tidak relevan.
+    deadline = signal_time.replace(hour=23, minute=59, second=59, microsecond=999999)
+    end_idx = tick_series.index_at_or_after(deadline)
+    if end_idx is None:
+        end_idx = len(tick_series)
+
     prices = tick_series.asks if is_buy else tick_series.bids
-    subset = prices[start_idx:]
-    if kind in ("BUY_STOP", "SELL_LIMIT"):
-        mask = subset >= target
-    else:  # BUY_LIMIT, SELL_STOP
+    subset = prices[start_idx:end_idx]
+    if kind == "BUY_STOP":
+        mask = subset >= target  # nunggu harga NAIK menembus target
+    else:  # SELL_STOP -- nunggu harga TURUN menembus target
         mask = subset <= target
     hits = np.nonzero(mask)[0]
     if len(hits) == 0:
-        return None  # tidak pernah tersentuh sampai akhir data
+        return None  # kedaluwarsa/tidak pernah tersentuh
     return start_idx + int(hits[0]), target, kind
 
 

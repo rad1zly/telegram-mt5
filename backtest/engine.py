@@ -114,14 +114,23 @@ def resolve_entry_fill(
     if kind == "MARKET":
         return start_idx, current_price, kind
 
-    # Pending order -- scan maju sampai level target tersentuh.
+    # Pending order (STOP) -- tunggu harga menembus ke sisi yang disyaratkan
+    # channel. HANYA berlaku sampai akhir hari sinyalnya: channel ini kirim
+    # sinyal baru tiap hari, jadi pending yang belum tersentuh sampai
+    # pergantian hari sudah TIDAK relevan lagi -- kondisi pasar yang jadi
+    # dasar sinyalnya sudah lewat. Tanpa batas ini, pending bisa terisi
+    # berhari-hari bahkan berminggu-minggu kemudian, di rezim pasar yang
+    # sama sekali berbeda dari yang dimaksud channel.
+    deadline = signal_time.replace(hour=23, minute=59, second=59, microsecond=999999)
+
     for i in range(start_idx, len(series.candles)):
         candle = series.candles[i]
-        if kind in ("BUY_STOP", "SELL_LIMIT"):
-            # nunggu harga NAIK menyentuh target
-            if candle.high >= target:
+        if candle.time > deadline:
+            return None  # kedaluwarsa, order dibatalkan
+        if kind == "BUY_STOP":
+            if candle.high >= target:  # nunggu harga NAIK menembus target
                 return i, target, kind
-        else:  # BUY_LIMIT, SELL_STOP -- nunggu harga TURUN menyentuh target
+        else:  # SELL_STOP -- nunggu harga TURUN menembus target
             if candle.low <= target:
                 return i, target, kind
 

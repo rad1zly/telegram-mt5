@@ -33,10 +33,12 @@ ke perilaku "cuma notifikasi".
 
 Guard yang AKTIF: dedup, SL wajib ada, simbol harus ke-resolve jelas, lot
 harus lolos volume_min, max_trades_per_day, posisi diverifikasi ulang ke
-broker sebelum follow-up diterapkan, dan daily_loss_cap_usd.
+broker sebelum follow-up diterapkan.
 
 Guard yang MASIH BELUM ada: filter spread (guards.max_spread_pips ada di
-config tapi BELUM dibaca kode mana pun — jangan dikira aktif).
+config tapi BELUM dibaca kode mana pun — jangan dikira aktif). Batas rugi
+harian SENGAJA TIDAK ada: keputusan user, risiko dikendalikan murni lewat
+risk.usd_per_trade yang tetap per trade.
 """
 
 import asyncio
@@ -112,44 +114,8 @@ class Context:
         self.broker_symbols = broker_symbols
 
 
-async def _daily_loss_cap_breached(ctx: Context, loop) -> Optional[float]:
-    """Rugi terealisasi hari ini kalau SUDAH menembus risk.daily_loss_cap_usd,
-    None kalau belum/tidak berlaku.
-
-    Sengaja pakai riwayat deal BROKER, bukan DB lokal: DB kita tidak
-    menyimpan P/L sama sekali, dan posisi bisa kena TP/SL atau ditutup
-    manual tanpa bot tahu. Kalau riwayat tidak bisa diambil, guard ini
-    TIDAK memblokir (fail-open) -- diblokir terus-menerus gara-gara
-    koneksi bermasalah juga bukan perilaku yang benar; kejadiannya
-    di-log supaya tetap kelihatan."""
-    cap = (ctx.settings.get("risk") or {}).get("daily_loss_cap_usd")
-    if not cap or cap <= 0:
-        return None
-
-    realized = await loop.run_in_executor(
-        None, mt5_client.get_realized_pnl_since, today_start()
-    )
-    if realized is None:
-        log.warning("Tidak bisa ambil riwayat deal — daily_loss_cap dilewati untuk pesan ini")
-        return None
-    # cap disimpan sebagai angka POSITIF di config; rugi = P/L negatif
-    if realized <= -abs(cap):
-        return realized
-    return None
-
-
 async def handle_entry_signal(ctx: Context, signal, msg) -> None:
     loop = asyncio.get_event_loop()
-
-    breached = await _daily_loss_cap_breached(ctx, loop)
-    if breached is not None:
-        cap = ctx.settings["risk"]["daily_loss_cap_usd"]
-        notifier.send(
-            f"🛑 Signal #{msg.id} ({signal.symbol}) DILEWATI — rugi hari ini "
-            f"${breached:,.2f} sudah menembus daily_loss_cap_usd (${cap:,.2f}). "
-            f"Tidak ada entry baru sampai pergantian hari (UTC)."
-        )
-        return
 
     max_per_day = ctx.settings["risk"]["max_trades_per_day"]
     opened_today = ctx.db.count_positions_opened_since(today_start_iso())

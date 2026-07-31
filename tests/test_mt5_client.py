@@ -21,17 +21,31 @@ def test_sell_stop_when_entry_below_current_price():
     assert decide_order_kind("SELL", entry=4344.0, current_price=4350.0, tolerance=0.1) == "SELL_STOP"
 
 
-def test_sell_limit_when_entry_above_current_price():
-    # pullback ke atas dulu baru sell: harga sekarang 4344, entry 4350
-    assert decide_order_kind("SELL", entry=4350.0, current_price=4344.0, tolerance=0.1) == "SELL_LIMIT"
+def test_sell_is_market_when_price_already_below_level():
+    # "Sell while below 4350" + harga sudah 4344 (di BAWAH 4350) = syarat
+    # SUDAH terpenuhi -> masuk SEKARANG. Dulu ini jadi SELL_LIMIT, yaitu
+    # menunggu harga NAIK balik ke 4350 -- kebalikan dari maksud channel.
+    assert decide_order_kind("SELL", entry=4350.0, current_price=4344.0, tolerance=0.1) == "MARKET"
 
 
 def test_buy_stop_when_entry_above_current_price():
     assert decide_order_kind("BUY", entry=4350.0, current_price=4344.0, tolerance=0.1) == "BUY_STOP"
 
 
-def test_buy_limit_when_entry_below_current_price():
-    assert decide_order_kind("BUY", entry=4344.0, current_price=4350.0, tolerance=0.1) == "BUY_LIMIT"
+def test_buy_is_market_when_price_already_above_level():
+    # "Buy while above 4344" + harga sudah 4350 (di ATAS 4344) = syarat
+    # SUDAH terpenuhi -> masuk SEKARANG, bukan menunggu harga turun balik.
+    assert decide_order_kind("BUY", entry=4344.0, current_price=4350.0, tolerance=0.1) == "MARKET"
+
+
+def test_limit_orders_are_never_produced():
+    """Channel ini tidak pernah bermaksud limit: level yang disebut adalah
+    SYARAT di sekitar harga sekarang, bukan target yang ditunggu dari arah
+    berlawanan. Kunci invarian ini supaya tidak diam-diam balik lagi."""
+    for direction in ("BUY", "SELL"):
+        for current in (4300.0, 4344.0, 4400.0):
+            kind = decide_order_kind(direction, entry=4344.0, current_price=current, tolerance=0.1)
+            assert kind in ("MARKET", "BUY_STOP", "SELL_STOP"), kind
 
 
 def test_pip_size_for_5_digit_broker():

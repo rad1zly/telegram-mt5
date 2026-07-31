@@ -12,7 +12,6 @@ dengan loop.run_in_executor.
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Optional
 
 log = logging.getLogger(__name__)
@@ -70,36 +69,6 @@ def get_all_symbol_names() -> list[str]:
     return [s.name for s in _mt5().symbols_get()]
 
 
-def get_realized_pnl_since(since: datetime) -> Optional[float]:
-    """Total P/L SUDAH TEREALISASI sejak `since`, langsung dari riwayat
-    deal broker — bukan dihitung ulang dari DB lokal.
-
-    Kenapa dari broker: angka broker sudah termasuk swap dan komisi, dan
-    tetap benar walau posisi ditutup manual di terminal atau kena TP/SL
-    tanpa bot tahu. DB lokal kita tidak menyimpan P/L sama sekali, jadi
-    tidak bisa jadi sumber untuk guard yang menyangkut uang.
-
-    Return None kalau riwayat tidak bisa diambil (belum connect, dsb) --
-    pemanggil HARUS memperlakukan None sebagai 'tidak tahu', bukan 'nol',
-    supaya guard tidak diam-diam mati saat koneksi bermasalah.
-
-    Hanya menghitung deal milik bot ini (MAGIC_NUMBER), supaya trading
-    manual di akun yang sama tidak ikut memicu/menghapus batas harian."""
-    mt5 = _mt5()
-    deals = mt5.history_deals_get(since, datetime.now(timezone.utc))
-    if deals is None:
-        log.error("history_deals_get gagal: %s", mt5.last_error())
-        return None
-    total = 0.0
-    for deal in deals:
-        if getattr(deal, "magic", None) != MAGIC_NUMBER:
-            continue
-        total += getattr(deal, "profit", 0.0) or 0.0
-        total += getattr(deal, "swap", 0.0) or 0.0
-        total += getattr(deal, "commission", 0.0) or 0.0
-    return total
-
-
 def get_position(ticket: int):
     """None kalau posisi sudah tidak ada di broker (sudah kena TP/SL atau
     ditutup manual) — dipakai untuk sinkronisasi status lokal sebelum
@@ -147,21 +116,39 @@ def decide_order_kind(direction: str, entry: float, current_price: float, tolera
     """Pure logic, tidak butuh MT5 — testable di mesin manapun.
 
     direction: 'BUY' atau 'SELL'. Return salah satu:
-    'MARKET', 'BUY_LIMIT', 'SELL_LIMIT', 'BUY_STOP', 'SELL_STOP'.
+    'MARKET', 'BUY_STOP', 'SELL_STOP'.
 
-    Kalau entry masih dalam toleransi dari harga sekarang -> market order.
-    Kalau tidak: BUY dengan entry di atas harga sekarang -> breakout (STOP);
-    BUY dengan entry di bawah harga sekarang -> pullback (LIMIT). Simetris
-    untuk SELL. Ini menghindari perlu menebak STOP vs LIMIT dari kata
-    'below'/'above' di teks channel — cukup arah + level, order type
-    ditentukan dari harga live saat eksekusi.
+    CARA BACA SINYAL CHANNEL INI (dikonfirmasi dari korpus): frasa
+    "Sell while below X" / "Buy while above X" itu SYARAT MASUK, bukan
+    harga limit yang ditunggu. Level X hampir selalu menempel di harga
+    saat itu — jaraknya cuma ~0.17x jarak-ke-SL (median dari 902 sinyal
+    yang mencantumkan 'current price'), 92% di bawah 0.5x. Jadi maksud
+    channel adalah "harga sekarang sudah di sisi yang benar, MASUK
+    SEKARANG", bukan "pasang pending jauh dari pasar".
+
+    Karena itu:
+    - Syarat SUDAH terpenuhi (SELL dan harga sudah di BAWAH X, atau BUY
+      dan harga sudah di ATAS X) -> MARKET, masuk sekarang.
+    - Syarat BELUM terpenuhi -> STOP order di X, yaitu menunggu harga
+      menembus ke sisi yang benar dulu. Ini tetap sesuai maksud channel.
+
+    LIMIT order SENGAJA TIDAK PERNAH dipakai. Limit berarti menunggu harga
+    balik MENJAUH ke arah berlawanan dari syarat — kebalikan dari maksud
+    channel. Dulu justru inilah yang dipakai untuk kasus "syarat sudah
+    terpenuhi", dan akibatnya entry baru terisi berjam-jam sampai
+    berminggu-minggu kemudian (kadang tidak pernah), jauh dari momen yang
+    dimaksud channel.
     """
     diff = entry - current_price
     if abs(diff) <= tolerance:
         return "MARKET"
     if direction == "BUY":
-        return "BUY_STOP" if entry > current_price else "BUY_LIMIT"
-    return "SELL_STOP" if entry < current_price else "SELL_LIMIT"
+        # entry di ATAS harga -> syarat "above X" belum terpenuhi, tunggu tembus.
+        # entry di BAWAH harga -> syarat sudah terpenuhi, masuk sekarang.
+        return "BUY_STOP" if entry > current_price else "MARKET"
+    # entry di BAWAH harga -> syarat "below X" belum terpenuhi, tunggu tembus.
+    # entry di ATAS harga -> syarat sudah terpenuhi, masuk sekarang.
+    return "SELL_STOP" if entry < current_price else "MARKET"
 
 
 def _order_type_constant(mt5, kind: str, direction: str):

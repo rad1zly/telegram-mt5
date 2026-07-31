@@ -470,15 +470,17 @@ def test_followup_before_pending_entry_fills_is_ignored():
     terjadi belakangan -- membandingkan dua periode berbeda. Nyatanya
     sempat memproduksi kerugian $388 pada trade yang risikonya $30.
 
-    Di sini: sinyal SELL LIMIT jauh di atas harga, follow-up 'close'
-    datang 5 menit kemudian, entry baru terisi 30 menit setelah itu.
-    Follow-up TIDAK boleh menyentuh trade yang belum ada.
+    Di sini: syarat "sell below 4300" BELUM terpenuhi saat sinyal (harga
+    masih 4344), jadi jadi SELL_STOP yang menunggu harga turun. Follow-up
+    'close' datang 5 menit kemudian, saat harga belum turun -- posisinya
+    belum ada. Entry baru terisi 30 menit setelahnya (masih hari yang sama).
+    Follow-up itu TIDAK boleh menyentuh trade yang belum ada.
     """
     rows = [
         {
             "message_id": 1, "date_utc": T0.isoformat(),
-            # SELL LIMIT di 4400 -- jauh di atas harga awal (4344)
-            "text": "GOLD\n\nsell below 4400\n\ntp.: 4380\nsl.: 4410",
+            # syarat belum terpenuhi (harga 4344 masih DI ATAS 4300) -> SELL_STOP
+            "text": "GOLD\n\nsell below 4300\n\ntp.: 4280\nsl.: 4310",
             "reply_to_msg_id": None,
         },
         {
@@ -488,10 +490,10 @@ def test_followup_before_pending_entry_fills_is_ignored():
         },
     ]
     series = _series([
-        (0, 4344.0, 4344.5, 4343.5, 4344.2),    # sinyal: harga masih jauh di bawah 4400
+        (0, 4344.0, 4344.5, 4343.5, 4344.2),    # sinyal: harga masih di atas 4300
         (5, 4344.0, 4344.5, 4343.5, 4344.2),    # follow-up 'close' tiba -- entry BELUM terisi
-        (35, 4399.0, 4401.0, 4398.5, 4400.5),   # baru di sini harga menyentuh 4400 -> terisi
-        (40, 4400.0, 4411.0, 4399.0, 4410.5),   # lalu kena SL 4410
+        (35, 4301.0, 4302.0, 4299.0, 4300.0),   # baru di sini harga turun menembus 4300 -> terisi
+        (40, 4300.0, 4311.0, 4299.0, 4310.5),   # lalu kena SL 4310
     ])
 
     config = BacktestConfig(
