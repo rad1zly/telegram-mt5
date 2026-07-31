@@ -181,8 +181,10 @@ def main():
     pf = f"{report.profit_factor:.2f}" if report.profit_factor is not None else "N/A (tidak ada loss)"
     print(f"Profit factor           : {pf}")
     print(f"Max drawdown            : ${report.max_drawdown_usd:,.2f}")
-    print(f"Max DD balance          : {report.max_balance_drawdown_pct:.1f}%")
-    print(f"Max DD equity (estimasi): {report.max_equity_drawdown_pct:.1f}%")
+    print(f"Max DD balance          : {report.max_balance_drawdown_pct:.1f}% "
+          f"(dari puncak ${report.max_balance_drawdown_peak_usd:,.2f} pada {report.max_balance_drawdown_at})")
+    print(f"Max DD equity (estimasi): {report.max_equity_drawdown_pct:.1f}% "
+          f"(dari puncak ${report.max_equity_drawdown_peak_usd:,.2f} pada {report.max_equity_drawdown_at})")
     print(f"Max consecutive loss    : {report.max_consecutive_losses}")
     print()
     print("Dilewati:")

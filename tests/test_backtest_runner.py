@@ -153,6 +153,32 @@ def test_build_report_balance_vs_equity_drawdown_pct_diverge_on_overlapping_trad
 
     assert report.max_balance_drawdown_pct == pytest.approx(50.0)
     assert report.max_equity_drawdown_pct == pytest.approx(43.75)
+    # kedua titik terendah jatuh di t=100 (saat A closed), dan puncaknya
+    # cuma initial_deposit ($800) -- belum pernah naik sebelum drop ini.
+    assert report.max_balance_drawdown_at == T0 + timedelta(minutes=100)
+    assert report.max_equity_drawdown_at == T0 + timedelta(minutes=100)
+    assert report.max_balance_drawdown_peak_usd == pytest.approx(800.0)
+    assert report.max_equity_drawdown_peak_usd == pytest.approx(800.0)
+
+
+def test_build_report_drawdown_pct_is_large_early_when_peak_still_small():
+    # Ilustrasi properti matematis yang bikin drawdown % awal kelihatan
+    # jauh lebih besar dari drawdown $ yang sama terjadi belakangan:
+    # modal $800, rugi -$500 di trade PERTAMA (puncak baru $800) -> ~62.5%.
+    # Lalu profit numpuk jadi puncak $5000, rugi -$500 lagi di trade
+    # TERAKHIR cuma keliatan ~10% walau nominal dolarnya SAMA PERSIS.
+    trades = [
+        _closed_trade_at(T0, T0 + timedelta(minutes=10), -500.0, msg_id=1),
+        _closed_trade_at(T0 + timedelta(minutes=20), T0 + timedelta(minutes=30), 4700.0, msg_id=2),
+        _closed_trade_at(T0 + timedelta(minutes=40), T0 + timedelta(minutes=50), -500.0, msg_id=3),
+    ]
+    report = build_report(trades, {"XAUUSD": _spec()}, skipped={}, initial_deposit=800.0)
+
+    # drawdown TERBESAR ada di trade PERTAMA (62.5%), bukan yang nominal
+    # dolarnya sama di trade terakhir (cuma ~10%) -- karena puncaknya beda.
+    assert report.max_balance_drawdown_pct == pytest.approx(62.5)
+    assert report.max_balance_drawdown_at == T0 + timedelta(minutes=10)
+    assert report.max_balance_drawdown_peak_usd == pytest.approx(800.0)
 
 
 def test_build_report_flags_account_blown_when_equity_hits_zero():

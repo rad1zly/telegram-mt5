@@ -325,6 +325,10 @@ class BacktestReport:
     profit_factor: Optional[float]
     max_balance_drawdown_pct: float
     max_equity_drawdown_pct: float
+    max_balance_drawdown_at: Optional[datetime]
+    max_equity_drawdown_at: Optional[datetime]
+    max_balance_drawdown_peak_usd: float
+    max_equity_drawdown_peak_usd: float
     account_blown: bool
     account_blown_at: Optional[datetime]
     per_symbol: dict
@@ -400,18 +404,34 @@ def _first_account_blown_at(equity_points: list) -> Optional[datetime]:
     return None
 
 
-def _max_drawdown_pct(points: list, initial_deposit: float) -> float:
+def _max_drawdown_pct(points: list, initial_deposit: float):
     """Persentase penurunan TERBESAR dari puncak berjalan (standar
     'maximal drawdown %' broker -- relatif ke puncak SEBELUM titik itu,
     bukan ke initial_deposit tetap). Puncak diawali dari initial_deposit
-    itu sendiri, supaya loss di trade pertama pun terukur dengan benar."""
+    itu sendiri, supaya loss di trade pertama pun terukur dengan benar.
+
+    PENTING: drawdown % yang BESAR bisa terjadi di AWAL kurun waktu justru
+    KARENA puncaknya masih kecil (belum jauh dari initial_deposit) --
+    penurunan dolar yang sama akan tampak jauh lebih kecil persentasenya
+    kalau terjadi belakangan, setelah puncak sudah naik banyak. Ini bukan
+    bug, tapi properti matematis dari % relatif-ke-puncak -- makanya
+    fungsi ini juga mengembalikan KAPAN dan di level berapa puncaknya,
+    supaya bisa diverifikasi apakah masuk akal.
+
+    Return: (max_dd_pct, waktu_titik_terendah, nilai_puncak_saat_itu)."""
     peak = initial_deposit
     max_dd_pct = 0.0
-    for _, value in points:
+    at_time = None
+    peak_at_dd = initial_deposit
+    for t, value in points:
         peak = max(peak, value)
         if peak > 0:
-            max_dd_pct = max(max_dd_pct, (peak - value) / peak * 100)
-    return max_dd_pct
+            dd_pct = (peak - value) / peak * 100
+            if dd_pct > max_dd_pct:
+                max_dd_pct = dd_pct
+                at_time = t
+                peak_at_dd = peak
+    return max_dd_pct, at_time, peak_at_dd
 
 
 def _max_consecutive_losses(chronological_pnls: list) -> int:
@@ -474,6 +494,8 @@ def build_report(trades: list, symbol_specs: dict, skipped: dict, initial_deposi
     balance_points = _balance_curve_points(closed, initial_deposit)
     equity_points = _equity_curve_points(closed, initial_deposit)
     blown_at = _first_account_blown_at(equity_points)
+    balance_dd_pct, balance_dd_at, balance_dd_peak = _max_drawdown_pct(balance_points, initial_deposit)
+    equity_dd_pct, equity_dd_at, equity_dd_peak = _max_drawdown_pct(equity_points, initial_deposit)
 
     return BacktestReport(
         total_trades=len(trades),
@@ -484,8 +506,12 @@ def build_report(trades: list, symbol_specs: dict, skipped: dict, initial_deposi
         max_drawdown_usd=_max_drawdown_usd(ordered_pnls),
         max_consecutive_losses=_max_consecutive_losses(ordered_pnls),
         profit_factor=_profit_factor(ordered_pnls),
-        max_balance_drawdown_pct=_max_drawdown_pct(balance_points, initial_deposit),
-        max_equity_drawdown_pct=_max_drawdown_pct(equity_points, initial_deposit),
+        max_balance_drawdown_pct=balance_dd_pct,
+        max_equity_drawdown_pct=equity_dd_pct,
+        max_balance_drawdown_at=balance_dd_at,
+        max_equity_drawdown_at=equity_dd_at,
+        max_balance_drawdown_peak_usd=balance_dd_peak,
+        max_equity_drawdown_peak_usd=equity_dd_peak,
         account_blown=blown_at is not None,
         account_blown_at=blown_at,
         per_symbol=per_symbol,
