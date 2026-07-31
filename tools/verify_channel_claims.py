@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import yaml
 
 from backtest.price_data import PriceSeries
+from backtest.server_time import ServerClock
 from src.parser.patterns import parse_entry_signal
 from src.trading.symbols import SymbolResolver
 from tools.run_backtest import DATA_DIR, PRICE_FILES, SIGNALS_PATH
@@ -96,6 +97,7 @@ def resolve_parent_signal(reply_to, rows_by_id, signal_by_id, max_depth=20):
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--days", type=int, default=30, help="Berapa hari ke belakang diperiksa (default 30).")
+    p.add_argument("--since", help="Tanggal mulai eksplisit (YYYY-MM-DD), mis. 2026-01-01. Menimpa --days.")
     p.add_argument("--show-all", action="store_true", help="Tampilkan semua klaim, bukan cuma yang meleset.")
     return p.parse_args()
 
@@ -110,15 +112,15 @@ def main():
         settings["symbols"].get("broker_overrides") or {},
     )
     price_offsets = settings["guards"].get("broker_price_offset_overrides") or {}
-    server_offset = (settings.get("backtest") or {}).get("server_utc_offset_hours", 0.0)
+    clock = ServerClock.from_config(settings.get("backtest"))
 
-    print(f"Memuat data harga M5... (server broker UTC{server_offset:+g}h, dikoreksi ke UTC asli)")
+    print(f"Memuat data harga M5... (server broker {clock.describe()}, dikoreksi ke UTC asli)")
     series = {}
     for canonical, filename in PRICE_FILES.items():
         path = os.path.join(DATA_DIR, filename)
         if not os.path.exists(path):
             continue
-        series[canonical] = PriceSeries.from_csv(path, server_utc_offset_hours=server_offset)
+        series[canonical] = PriceSeries.from_csv(path, clock=clock)
 
     with open(SIGNALS_PATH) as f:
         rows = [json.loads(line) for line in f]
@@ -133,8 +135,12 @@ def main():
             signal_by_id[r["message_id"]] = (signal, r)
 
     latest = max(datetime.fromisoformat(r["date_utc"]) for r in rows)
-    cutoff = latest - timedelta(days=args.days)
+    if args.since:
+        cutoff = datetime.fromisoformat(args.since).replace(tzinfo=latest.tzinfo)
+    else:
+        cutoff = latest - timedelta(days=args.days)
     recent = [r for r in rows if datetime.fromisoformat(r["date_utc"]) >= cutoff]
+    window_label = f"sejak {args.since}" if args.since else f"{args.days} HARI TERAKHIR"
     print(f"Window: {cutoff.date()} s/d {latest.date()} ({len(recent)} pesan)\n")
 
     results = []
@@ -203,7 +209,7 @@ def main():
         results.append(rec)
 
     print("=" * 74)
-    print(f"VERIFIKASI KLAIM CHANNEL -- {args.days} HARI TERAKHIR")
+    print(f"VERIFIKASI KLAIM CHANNEL -- {window_label.upper()}")
     print("=" * 74)
     counts = Counter(r["verdict"] for r in results)
     print(f"Total klaim 'Hit Target/SL' : {len(results)}")

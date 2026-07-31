@@ -23,13 +23,15 @@ import os
 import re
 import statistics
 import sys
-from datetime import datetime, timedelta
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import yaml
 
 from backtest.price_data import PriceSeries
+from backtest.server_time import ServerClock
 from src.parser.patterns import parse_entry_signal
 from src.trading.symbols import SymbolResolver
 from tools.run_backtest import DATA_DIR, PRICE_FILES, SIGNALS_PATH
@@ -81,6 +83,48 @@ def median_error_pct(series, samples, shift_hours):
     return statistics.median(errors) if errors else None
 
 
+def median_error_for_clock(series, samples, clock):
+    """Sama seperti median_error_pct tapi pakai ServerClock penuh, jadi
+    kandidat yang paham DST bisa diadu langsung dengan offset tetap."""
+    errors = []
+    for canonical, dt, claimed in samples:
+        s = series[canonical]
+        # series di-load mentah (offset 0), jadi query digeser manual ke
+        # waktu server menurut clock yang sedang diuji.
+        idx = s.index_at_or_after(clock.to_server(dt).replace(tzinfo=timezone.utc))
+        if idx is None:
+            continue
+        candle = s.candles[idx]
+        mid = (candle.high + candle.low) / 2
+        errors.append(abs(mid - claimed) / claimed * 100)
+    return statistics.median(errors) if errors else None
+
+
+def monthly_best_offsets(series, samples):
+    """Offset terbaik DIUKUR ULANG TERPISAH tiap bulan -- kalau hasilnya
+    berbeda antara musim dingin dan musim panas, berarti broker pakai DST
+    dan offset tetap TIDAK akan pernah benar sepanjang tahun."""
+    by_month = defaultdict(list)
+    for sample in samples:
+        by_month[sample[1].strftime("%Y-%m")].append(sample)
+
+    rows = []
+    for month in sorted(by_month):
+        subset = by_month[month]
+        if len(subset) < 8:
+            continue
+        scored = [
+            (h * 0.25, median_error_pct(series, subset, h * 0.25))
+            for h in range(0, 21)
+        ]
+        scored = [pair for pair in scored if pair[1] is not None]
+        if not scored:  # semua di luar rentang data harga -> tidak terukur
+            continue
+        offset, err = min(scored, key=lambda pair: pair[1])
+        rows.append((month, len(subset), offset, err))
+    return rows
+
+
 def main():
     with open("config/settings.yaml") as f:
         settings = yaml.safe_load(f)
@@ -106,30 +150,83 @@ def main():
         print("Tidak ada sampel; tidak bisa mengukur.")
         return
 
-    print("Median |error| harga (%) untuk tiap pergeseran waktu:")
+    print("Median |error| harga (%) untuk tiap pergeseran waktu TETAP:")
     print("(pergeseran = berapa jam waktu pencarian digeser di data kita)\n")
     results = []
     for quarter in range(-16, 21):  # -4h s/d +5h, langkah 15 menit
         hours = quarter * 0.25
         err = median_error_pct(series, samples, hours)
-        if err is None:
-            continue
-        results.append((hours, err))
+        if err is not None:
+            results.append((hours, err))
 
     best_hours, best_err = min(results, key=lambda r: r[1])
     worst_err = max(r[1] for r in results)
     for hours, err in results:
         bar = "#" * int(err / worst_err * 50)
-        mark = "  <== PALING COCOK" if hours == best_hours else ""
+        mark = "  <== terbaik utk offset TETAP" if hours == best_hours else ""
         print(f"  {hours:+6.2f}h  {err:7.4f}%  {bar}{mark}")
 
-    print(f"\nHASIL: server broker = UTC{best_hours:+g} (median error {best_err:.4f}%)")
-    current = (settings.get("backtest") or {}).get("server_utc_offset_hours", 0.0)
-    if abs(current - best_hours) < 0.01:
-        print(f"Config sudah benar (backtest.server_utc_offset_hours: {current:g}).")
+    # --- Apakah broker pakai DST? ---
+    print("\n" + "=" * 66)
+    print("OFFSET TERBAIK DIUKUR ULANG TERPISAH TIAP BULAN")
+    print("(kalau musim dingin dan musim panas beda, berarti broker pakai DST")
+    print(" dan offset TETAP tidak akan pernah benar sepanjang tahun)")
+    print("=" * 66)
+    monthly = monthly_best_offsets(series, samples)
+    for month, n, offset, err in monthly:
+        print(f"  {month}  n={n:4}  offset {offset:+5.2f}h  (err {err:.4f}%)")
+
+    offsets_seen = {row[2] for row in monthly}
+    dst_suspected = len(offsets_seen) > 1 and (max(offsets_seen) - min(offsets_seen)) >= 0.5
+
+    # --- Adu kandidat konfigurasi lengkap ---
+    print("\n" + "=" * 66)
+    print("ADU KANDIDAT KONFIGURASI (makin kecil makin cocok)")
+    print("=" * 66)
+    candidates = [
+        (f"offset tetap UTC{best_hours:+g}", ServerClock(fixed_offset_hours=best_hours),
+         {"server_utc_offset_hours": best_hours}),
+    ]
+    try:
+        from zoneinfo import ZoneInfo
+
+        # basis UTC+2 dgn aturan DST Amerika (banyak broker begini: server
+        # EET tapi ikut kalender New York) vs aturan DST Eropa
+        candidates.append((
+            "America/New_York +7h (basis UTC+2, DST Amerika)",
+            ServerClock(tz=ZoneInfo("America/New_York"), extra_hours=7),
+            {"server_timezone": "America/New_York", "server_timezone_extra_hours": 7},
+        ))
+        candidates.append((
+            "Europe/Athens (basis UTC+2, DST Eropa)",
+            ServerClock(tz=ZoneInfo("Europe/Athens")),
+            {"server_timezone": "Europe/Athens"},
+        ))
+    except ImportError:
+        print("  (zoneinfo/tzdata tidak tersedia -- kandidat DST dilewati)")
+
+    scored = []
+    for label, clock, config in candidates:
+        err = median_error_for_clock(series, samples, clock)
+        if err is not None:
+            scored.append((err, label, config))
+    scored.sort()
+    for err, label, _ in scored:
+        print(f"  {err:7.4f}%   {label}")
+
+    print("\n" + "=" * 66)
+    if dst_suspected:
+        print("KESIMPULAN: broker ini PAKAI DST (offset musim dingin != musim panas).")
+        print("Offset tetap TIDAK cukup -- pakai zona bernama.")
     else:
-        print(f"Config saat ini {current:g} -- UBAH ke {best_hours:g} di config/settings.yaml:")
-        print(f"  backtest:\n    server_utc_offset_hours: {best_hours:g}")
+        print("KESIMPULAN: tidak terdeteksi DST; offset tetap sudah memadai.")
+    if scored:
+        _, best_label, best_config = scored[0]
+        print(f"Paling cocok: {best_label}")
+        print("\nSetel di config/settings.yaml:")
+        print("  backtest:")
+        for key, value in best_config.items():
+            print(f"    {key}: {value}")
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ from backtest.engine import SymbolSpec
 from backtest.llm_source import load_llm_cache, make_llm_classify_fn
 from backtest.price_data import PriceSeries
 from backtest.runner import BacktestConfig, build_report, load_signal_rows, run
+from backtest.server_time import ServerClock
 from src.trading.symbols import SymbolResolver
 
 DATA_DIR = "backtest/data"
@@ -96,15 +97,15 @@ def main():
     with open("config/settings.yaml") as f:
         settings = yaml.safe_load(f)
 
-    server_offset = (settings.get("backtest") or {}).get("server_utc_offset_hours", 0.0)
-    print(f"Memuat data harga... (waktu server broker = UTC{server_offset:+g}h, dikoreksi ke UTC asli)")
+    clock = ServerClock.from_config(settings.get("backtest"))
+    print(f"Memuat data harga... (waktu server broker = {clock.describe()}, dikoreksi ke UTC asli)")
     price_series = {}
     for canonical, filename in PRICE_FILES.items():
         path = os.path.join(DATA_DIR, filename)
         if not os.path.exists(path):
             print(f"  [!] {path} tidak ada, {canonical} dilewati")
             continue
-        series = PriceSeries.from_csv(path, server_utc_offset_hours=server_offset)
+        series = PriceSeries.from_csv(path, clock=clock)
         price_series[canonical] = series
         print(f"  {canonical}: {len(series)} candle ({series.candles[0].time} - {series.candles[-1].time})")
 

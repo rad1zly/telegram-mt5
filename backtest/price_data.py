@@ -43,12 +43,20 @@ class PriceSeries:
         self._times = [c.time for c in candles]
 
     @classmethod
-    def from_csv(cls, path: str, server_utc_offset_hours: float = 0.0) -> "PriceSeries":
-        """server_utc_offset_hours: zona waktu server broker relatif UTC
-        (mis. 3.0 untuk broker GMT+3). Timestamp di file DIKURANGI offset
-        ini supaya jadi UTC ASLI, sehingga bisa dibandingkan langsung
-        dengan date_utc pesan Telegram. Lihat docstring modul."""
-        shift = timedelta(hours=server_utc_offset_hours)
+    def from_csv(cls, path: str, server_utc_offset_hours: float = 0.0,
+                 clock=None) -> "PriceSeries":
+        """Timestamp di file dikonversi dari waktu server broker ke UTC
+        ASLI supaya bisa dibandingkan langsung dengan date_utc pesan
+        Telegram (lihat docstring modul).
+
+        clock: ServerClock (backtest/server_time.py) -- CARA YANG DISARANKAN,
+        karena paham DST (broker EET/EEST: UTC+2 musim dingin, UTC+3 musim
+        panas). server_utc_offset_hours cuma dipakai kalau clock=None,
+        untuk broker tanpa DST atau pemanggil lama."""
+        if clock is None:
+            from backtest.server_time import ServerClock
+
+            clock = ServerClock(fixed_offset_hours=server_utc_offset_hours)
         candles = []
         with open(path) as f:
             header = f.readline()
@@ -61,8 +69,8 @@ class PriceSeries:
                 if len(parts) < 6:
                     continue
                 date_str, time_str, o, h, low_, c = parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
-                dt = datetime.strptime(f"{date_str} {time_str}", "%Y.%m.%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                dt -= shift
+                server_naive = datetime.strptime(f"{date_str} {time_str}", "%Y.%m.%d %H:%M:%S")
+                dt = clock.to_utc(server_naive)
                 candles.append(Candle(time=dt, open=float(o), high=float(h), low=float(low_), close=float(c)))
         return cls(candles)
 

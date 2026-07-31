@@ -82,3 +82,73 @@ def test_tick_and_price_series_agree_on_the_same_instant(tmp_path):
     price = PriceSeries.from_csv(_write_m5(tmp_path), server_utc_offset_hours=3.0)
     ticks = _tick_series(3.0)
     assert price.candles[0].time == ticks.time_at(0)
+
+
+# --- DST: broker basis UTC+2 yang ikut aturan DST AMERIKA ---
+# Diukur dari korpus: peralihan Maret 2026 jatuh antara tgl 1-7 (+2h) dan
+# 8-14 (+3h) -- itu tanggal DST Amerika (8 Mar), bukan Eropa (29 Mar).
+
+def _us_dst_clock():
+    from zoneinfo import ZoneInfo
+
+    from backtest.server_time import ServerClock
+    return ServerClock(tz=ZoneInfo("America/New_York"), extra_hours=7)
+
+
+def test_dst_clock_is_utc_plus_2_in_winter():
+    clock = _us_dst_clock()
+    # 15 Jan 2026 12:00 waktu server -> UTC+2 -> 10:00 UTC
+    assert clock.to_utc(datetime(2026, 1, 15, 12, 0)) == datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc)
+
+
+def test_dst_clock_is_utc_plus_3_in_summer():
+    clock = _us_dst_clock()
+    # 15 Jul 2026 12:00 waktu server -> UTC+3 -> 09:00 UTC
+    assert clock.to_utc(datetime(2026, 7, 15, 12, 0)) == datetime(2026, 7, 15, 9, 0, tzinfo=timezone.utc)
+
+
+def test_dst_clock_switches_on_us_date_not_european_date():
+    """Pembeda paling penting: DST Amerika mulai 8 Maret 2026, Eropa 29 Maret.
+    Kalau ini pakai aturan Eropa, 10 Maret masih UTC+2 dan seluruh backtest
+    awal Maret meleset satu jam."""
+    clock = _us_dst_clock()
+    # 5 Maret (sebelum DST Amerika) -> masih UTC+2
+    assert clock.to_utc(datetime(2026, 3, 5, 12, 0)) == datetime(2026, 3, 5, 10, 0, tzinfo=timezone.utc)
+    # 10 Maret (sesudah DST Amerika, SEBELUM DST Eropa) -> sudah UTC+3
+    assert clock.to_utc(datetime(2026, 3, 10, 12, 0)) == datetime(2026, 3, 10, 9, 0, tzinfo=timezone.utc)
+
+
+def test_to_server_is_exact_inverse_of_to_utc_across_dst_boundary():
+    """to_server dan to_utc HARUS saling membatalkan. Sempat ada bug tanda
+    di jalur offset tetap (to_server mengurangi, bukan menambah) yang lolos
+    dari test lain -- ini yang menguncinya, di kedua jalur."""
+    from backtest.server_time import ServerClock
+
+    clocks = [_us_dst_clock(), ServerClock(fixed_offset_hours=3.0), ServerClock(fixed_offset_hours=0.0)]
+    server_times = [
+        datetime(2026, 1, 15, 12, 0), datetime(2026, 3, 5, 12, 0),
+        datetime(2026, 3, 10, 12, 0), datetime(2026, 7, 15, 12, 0),
+    ]
+    for clock in clocks:
+        for server_naive in server_times:
+            assert clock.to_server(clock.to_utc(server_naive)) == server_naive
+
+
+def test_from_config_prefers_named_timezone_over_fixed_offset():
+    from backtest.server_time import ServerClock
+
+    clock = ServerClock.from_config({
+        "server_timezone": "America/New_York",
+        "server_timezone_extra_hours": 7,
+        "server_utc_offset_hours": 3.0,  # harus DIABAIKAN
+    })
+    assert clock.is_dst_aware
+    assert clock.to_utc(datetime(2026, 1, 15, 12, 0)) == datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc)
+
+
+def test_from_config_falls_back_to_fixed_offset_when_no_timezone():
+    from backtest.server_time import ServerClock
+
+    clock = ServerClock.from_config({"server_utc_offset_hours": 3.0})
+    assert not clock.is_dst_aware
+    assert clock.to_utc(datetime(2026, 1, 15, 12, 0)) == datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc)

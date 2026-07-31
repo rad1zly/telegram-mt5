@@ -47,24 +47,30 @@ def _from_ns(ns: int) -> datetime:
 
 class TickSeries:
     def __init__(self, times: np.ndarray, bids: np.ndarray, asks: np.ndarray,
-                 server_utc_offset_hours: float = 0.0):
+                 server_utc_offset_hours: float = 0.0, clock=None):
         # times: int64 nanodetik sejak epoch, HARUS terurut ascending
         # (dijamin oleh from_csv via np.argsort, dan oleh pemanggil test).
         #
         # ZONA WAKTU: times disimpan APA ADANYA dalam waktu server broker
         # (lihat docstring modul + price_data.py). Konversi ke UTC asli
-        # dilakukan saat QUERY (index_at_or_after menggeser waktu yang
-        # DICARI, time_at menggeser hasilnya balik) -- BUKAN dengan
+        # dilakukan saat QUERY (index_at_or_after menerjemahkan waktu yang
+        # DICARI, time_at menerjemahkan hasilnya balik) -- BUKAN dengan
         # menggeser seluruh array, karena array-nya bisa ratusan juta
         # elemen lewat memmap dan menggesernya akan memaksa seluruh isi
-        # file masuk RAM (justru hal yang dihindari from_binary).
+        # file masuk RAM (justru hal yang dihindari from_binary). Ini juga
+        # yang bikin DST bisa ditangani benar: tiap query diterjemahkan
+        # menurut TANGGALNYA masing-masing, bukan satu offset untuk semua.
         self.times = times
         self.bids = bids
         self.asks = asks
-        self._shift_ns = int(server_utc_offset_hours * 3600 * 1_000_000_000)
+        if clock is None:
+            from backtest.server_time import ServerClock
+
+            clock = ServerClock(fixed_offset_hours=server_utc_offset_hours)
+        self._clock = clock
 
     @classmethod
-    def from_csv(cls, path: str, server_utc_offset_hours: float = 0.0) -> "TickSeries":
+    def from_csv(cls, path: str, server_utc_offset_hours: float = 0.0, clock=None) -> "TickSeries":
         import pandas as pd
 
         with open(path) as f:
@@ -108,10 +114,10 @@ class TickSeries:
 
         order = np.argsort(times_ns, kind="stable")
         return cls(times=times_ns[order], bids=bids[order], asks=asks[order],
-                   server_utc_offset_hours=server_utc_offset_hours)
+                   server_utc_offset_hours=server_utc_offset_hours, clock=clock)
 
     @classmethod
-    def from_binary(cls, prefix: str, server_utc_offset_hours: float = 0.0) -> "TickSeries":
+    def from_binary(cls, prefix: str, server_utc_offset_hours: float = 0.0, clock=None) -> "TickSeries":
         """Baca file biner hasil tools/prepare_tick_binary.py LEWAT
         MEMORY-MAP (numpy.memmap) -- OS cuma nge-load bagian file yang
         BENAR-BENAR diakses ke RAM saat itu, bukan seluruh isi file
@@ -125,7 +131,7 @@ class TickSeries:
         bids = np.memmap(prefix + ".bids.bin", dtype="float32", mode="r")
         asks = np.memmap(prefix + ".asks.bin", dtype="float32", mode="r")
         return cls(times=times, bids=bids, asks=asks,
-                   server_utc_offset_hours=server_utc_offset_hours)
+                   server_utc_offset_hours=server_utc_offset_hours, clock=clock)
 
     def index_at_or_after(self, dt: datetime) -> Optional[int]:
         """Index tick pertama dengan time >= dt (dt dalam UTC ASLI), atau
@@ -136,7 +142,7 @@ class TickSeries:
         disimpan apa adanya dalam waktu server (lihat __init__)."""
         if len(self.times) == 0:
             return None
-        ts = _to_ns(dt) + self._shift_ns
+        ts = _to_ns(self._clock.to_server(dt).replace(tzinfo=timezone.utc))
         if ts < self.times[0]:
             return None
         idx = int(np.searchsorted(self.times, ts, side="left"))
@@ -146,7 +152,8 @@ class TickSeries:
 
     def time_at(self, idx: int) -> datetime:
         """Waktu tick ke-idx dalam UTC ASLI (sudah dikoreksi dari waktu server)."""
-        return _from_ns(self.times[idx] - self._shift_ns)
+        server_naive = _from_ns(self.times[idx]).replace(tzinfo=None)
+        return self._clock.to_utc(server_naive)
 
     def __len__(self) -> int:
         return len(self.times)
