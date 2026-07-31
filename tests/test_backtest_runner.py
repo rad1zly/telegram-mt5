@@ -7,7 +7,7 @@ sys.path.insert(0, ".")
 
 from backtest.engine import SimulatedTrade, SymbolSpec  # noqa: E402
 from backtest.price_data import Candle, PriceSeries  # noqa: E402
-from backtest.runner import BacktestConfig, build_report, run  # noqa: E402
+from backtest.runner import BacktestConfig, build_report, load_signal_rows, run  # noqa: E402
 from src.trading.symbols import SymbolResolver  # noqa: E402
 
 T0 = datetime(2025, 6, 1, 0, 0, tzinfo=timezone.utc)
@@ -445,3 +445,17 @@ def test_run_reply_chain_falls_back_to_symbol_matching_when_no_reply():
     )
     assert len(trades) == 1
     assert trades[0].tp1_hit is True
+
+
+def test_load_signal_rows_filters_by_since_and_until(tmp_path):
+    path = tmp_path / "signals.jsonl"
+    path.write_text("\n".join([
+        '{"message_id": 1, "date_utc": "2025-01-15T00:00:00+00:00", "text": "a", "reply_to_msg_id": null}',
+        '{"message_id": 2, "date_utc": "2025-03-03T00:00:00+00:00", "text": "b", "reply_to_msg_id": null}',
+        '{"message_id": 3, "date_utc": "2025-06-01T00:00:00+00:00", "text": "c", "reply_to_msg_id": null}',
+    ]))
+
+    assert [r["message_id"] for r in load_signal_rows(str(path))] == [1, 2, 3]
+    assert [r["message_id"] for r in load_signal_rows(str(path), since="2025-03-03")] == [2, 3]
+    assert [r["message_id"] for r in load_signal_rows(str(path), until="2025-03-03")] == [1]
+    assert [r["message_id"] for r in load_signal_rows(str(path), since="2025-02-01", until="2025-06-01")] == [2]

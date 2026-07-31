@@ -55,7 +55,15 @@ class BacktestConfig:
                                                   # bergantung follow-up message channel sama sekali.
 
 
-def load_signal_rows(path: str) -> list:
+def load_signal_rows(path: str, since: Optional[str] = None, until: Optional[str] = None) -> list:
+    """since/until: tanggal ISO (mis. "2025-03-03"), inklusif -- dipakai
+    buat membatasi rentang backtest, misalnya biar bisa dibandingkan
+    apple-to-apple dengan sumber data lain yang cakupannya lebih pendek
+    (mis. M5 lokal yang cuma punya histori sejak tanggal tertentu).
+
+    CATATAN: kalau since dipasang, follow-up yang reply-chain-nya menuju
+    sinyal SEBELUM since ikut terpotong (parent-nya tidak ada di rows) --
+    follow-up begitu akan gagal resolve dan skip, bukan salah dihitung."""
     rows = []
     with open(path) as f:
         for line in f:
@@ -63,6 +71,10 @@ def load_signal_rows(path: str) -> list:
             if line:
                 rows.append(json.loads(line))
     rows.sort(key=lambda r: r["date_utc"])
+    if since:
+        rows = [r for r in rows if r["date_utc"] >= since]
+    if until:
+        rows = [r for r in rows if r["date_utc"] < until]
     return rows
 
 

@@ -73,6 +73,8 @@ def parse_args():
         "--initial-deposit", type=float, default=800.0,
         help="Modal awal (USD) buat hitung max drawdown balance/equity dalam %% (default: 800).",
     )
+    p.add_argument("--since", help="Batasi sinyal mulai tanggal ini (YYYY-MM-DD, inklusif), mis. 2025-03-03.")
+    p.add_argument("--until", help="Batasi sinyal sebelum tanggal ini (YYYY-MM-DD, eksklusif).")
     return p.parse_args()
 
 
@@ -123,8 +125,9 @@ def main():
     symbol_specs = {k: v for k, v in symbol_specs.items() if k in tick_series}
 
     print("\nMemuat korpus sinyal...")
-    signal_rows = load_signal_rows(SIGNALS_PATH)
-    print(f"  {len(signal_rows)} pesan")
+    signal_rows = load_signal_rows(SIGNALS_PATH, since=args.since, until=args.until)
+    range_note = f" (dibatasi {args.since or '...'} s/d {args.until or '...'})" if (args.since or args.until) else ""
+    print(f"  {len(signal_rows)} pesan{range_note}")
 
     classify_fn = None
     if args.source == "llm":
