@@ -511,3 +511,39 @@ def test_hit_stop_loss_announcement_stays_silent():
     assert classify_followup_kinds(
         "GOLD | Update\n\nHit Stop Loss -40 Pip❌\n\nThe price reversed and reached the 4097 level."
     ) == []
+
+
+def test_checkmark_pip_announcements_are_recognized():
+    """Bentuk paling umum di korpus & paling lama lolos: angka pip bercentang."""
+    for text in (
+        "US30 | Live Update\n\nThe price reached the 52570 level +240 pip✅",
+        "GOLD | Live Update\n\nGold exactly reached the 4095 level, dropping 110 pip from 4106 to 4095.✅",
+        "GOLD | Live update\n\nprofit more than 150 pip ✅\n\nThe price reached the 4235.",
+        "SPX500 | Live Update\n\nHit Another Target: +360 pip✅\n📊 Total Profit: +550 pip",
+    ):
+        assert "target_reached" in classify_followup_kinds(text), text[:50]
+
+
+def test_losses_are_never_read_as_target_reached():
+    """Penjaga paling penting dari pelonggaran deteksi pip: pip BERTANDA
+    MINUS atau ditandai ❌ adalah KERUGIAN. Salah baca di sini berarti bot
+    menutup posisi sambil mengira untung, padahal sedang rugi."""
+    for text in (
+        "USNAS100 | Bearish re-enter🔽\n\nThe price reached the 29190 level which means reached our sl at -40 pip",
+        "GOLD | Update\n\nHit Stop Loss -40 Pip❌\n\nThe price reversed.",
+        "US30 | Update\n\n❌ Hit Stop Loss -40 Pip\n\nThe price reversed and triggered our stop loss.",
+    ):
+        assert "target_reached" not in classify_followup_kinds(text), text[:50]
+
+
+def test_candle_close_wording_never_triggers_position_close():
+    """Channel sangat sering menyebut "candle close above/below X" -- itu
+    soal penutupan CANDLE, bukan perintah menutup POSISI. 189 pesan di
+    korpus berbentuk begini; kalau salah ditafsirkan, bot akan menutup
+    posisi tiap kali channel membahas level teknikal."""
+    for text in (
+        "GOLD | Live Update\n\n❌ A 5-minute candle close above 4033 will invalidate the bearish scenario.",
+        "US30 | Live Update\n\nA confirmed 1H candle close below 52,130 would support further bearish continuation.",
+        "GOLD | Live Update\n\n⚠️ Stop out: A 15-minute candle close above 4207.",
+    ):
+        assert "close_all" not in classify_followup_kinds(text), text[:50]

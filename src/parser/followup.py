@@ -112,9 +112,21 @@ TARGET_REACHED_RE = re.compile(
     # 14 hari terakhir korpus (#6947, #6915).
     r"|\bhit\s*\+\s*\d+(?:\.\d+)?\s*pips?\b"
     r"|\bdeliver(?:ing|ed)\b[^.\n]{0,20}\+\s*\d+(?:\.\d+)?\s*pips?\b"
-    r"|\breached\b[^.\n]{0,60}?\baround\s+\+?\s*\d+(?:\.\d+)?\s*pips?\b",
+    r"|\breached\b[^.\n]{0,60}?\baround\s+\+?\s*\d+(?:\.\d+)?\s*pips?\b"
+    # Bentuk paling umum di korpus dan paling lama lolos: angka pip yang
+    # ditandai CENTANG ✅ -- "reached the 52570 level +240 pip✅", "dropping
+    # 110 pip from 4106 to 4095.✅", "profit more than 150 pip ✅",
+    # "Hit Another Target: +360 pip✅". Centangnya sendiri yang menandakan
+    # ini kabar baik; channel memakai ❌ untuk kerugian. Dipakai bersama
+    # penjaga HIT_SL_RE + NEGATIVE_PIP_RE di classify_followup_kinds.
+    r"|\d+(?:\.\d+)?\s*pips?\b[^\n]{0,25}✅"
+    r"|\bprofit\b[^.\n]{0,25}\d+(?:\.\d+)?\s*pips?\b",
     re.IGNORECASE,
 )
+
+# Penjaga tambahan: pip BERTANDA MINUS atau ditandai ❌ = kerugian, jangan
+# sampai terbaca sebagai target tercapai ("reached our sl at -40 pip").
+NEGATIVE_PIP_RE = re.compile(r"-\s*\d+(?:\.\d+)?\s*pips?\b|❌", re.IGNORECASE)
 
 # Penjaga: jangan sampai pengumuman "Hit Stop Loss" ikut terbaca sebagai
 # target tercapai (dua-duanya memakai kata "hit").
@@ -223,7 +235,12 @@ def classify_followup_kinds(text: str) -> list[str]:
     # Dipisah sebagai kind TERSENDIRI (bukan langsung close_all) supaya
     # bisa dinyalakan/dimatikan dan diukur dampaknya terpisah, tanpa
     # mencampuri instruksi close yang memang eksplisit.
-    if not kinds and TARGET_REACHED_RE.search(text) and not HIT_SL_RE.search(text):
+    if (
+        not kinds
+        and TARGET_REACHED_RE.search(text)
+        and not HIT_SL_RE.search(text)
+        and not NEGATIVE_PIP_RE.search(text)
+    ):
         kinds.append("target_reached")
 
     return kinds
