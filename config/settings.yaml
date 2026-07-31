@@ -81,20 +81,30 @@ followup:
 # Target TP tetap per simbol (bukan dari signal.tp channel, bukan relatif ke
 # SL trade). Lihat backtest/runner.py: BacktestConfig.tp_fixed_distance_overrides.
 #
-# ASAL ANGKA: awalnya diturunkan sebagai persentil-40 distribusi "gerakan
-# terbaik sebelum SL kena" (MFE), TAPI perhitungan itu memakai data yang
-# waktunya belum dikoreksi (lihat server_timezone di bawah). Setelah koreksi,
-# persentil-40 yang sebenarnya jadi berbeda -- namun angka lama di bawah ini
-# tetap menghasilkan P/L lebih tinggi saat diadu ulang. Jadi angka di bawah
-# DIPERTAHANKAN karena terbukti lebih baik secara empiris, TAPI jangan lagi
-# disebut "persentil-40" -- itu sekadar jarak tetap hasil tuning yang
-# kebetulan bagus. Hitung ulang MFE-nya kalau mau menurunkan angka baru.
+# ASAL ANGKA: persentil ke-20 distribusi MFE ("gerakan terbaik sebelum SL
+# kena") per simbol, dihitung ulang dari data yang zona waktunya SUDAH
+# dikoreksi penuh. Dipilih lewat sweep 14 kandidat (tools/sweep_tp.py):
+# TP channel terjauh/terdekat, R-multiple 1-4R, dan MFE p5..p70.
 #
-# PENTING: dengan waktu yang sudah dikoreksi penuh (termasuk DST), TP
-# CHANNEL APA ADANYA menghasilkan total P/L TERTINGGI ($10,716 vs $8,961)
-# -- tapi win rate jauh lebih rendah (46.8% vs 60.4%), profit factor lebih
-# rendah (1.70 vs 1.77), dan drawdown JAUH lebih dalam (70.6% vs 28.0%
-# pada modal $800). Angka tetap di bawah menang telak secara risk-adjusted.
+# KENAPA p20, bukan yang P/L-nya paling tinggi:
+#   TP channel terjauh    P/L $10,716  WR 46.8%  PF 1.70  maxDD 70.6%
+#   MFE p20 (dipakai)     P/L  $8,939  WR 73.2%  PF 2.06  maxDD 21.4%
+# TP channel unggul total dolar tapi drawdown-nya 3x lebih dalam -- pada
+# modal kecil itu bedanya antara bertahan dan margin call.
+#
+# p20 juga TERBUKTI puncak sungguhan, bukan ujung range: p5/p10/p15 di
+# bawahnya dan p25/p30 di atasnya sama-sama lebih jelek ($/1%DD).
+#
+# ROBUSTNESS (diuji ulang di 3 sub-periode terpisah, bukan cuma total):
+# keluarga TP ketat (p15/p20) menang win-rate 3/3 sub-periode dan profit
+# factor 3/3 -- konsisten, bukan kebetulan satu periode. JUJURNYA: angka
+# lama (p40-an) justru menang max-drawdown 2/3 sub-periode. p20 tetap
+# dipilih karena PF/WR (agregat SEMUA trade) lebih bisa dipercaya daripada
+# max-DD yang cuma satu titik terburuk dan sangat berisik.
+#
+# Hitung ulang kalau data/broker berubah: .venv/bin/python tools/sweep_tp.py
+# CATATAN: angka ini diturunkan dari candle M5 (histori sejak Mar 2025).
+# Kalau punya data TICK yang lebih panjang, sweep ulang di sana.
 backtest:
   # Zona waktu server broker untuk file M5/tick hasil export MT5. Timestamp
   # di file itu WAKTU SERVER, bukan UTC -- sementara timestamp pesan Telegram
@@ -124,10 +134,10 @@ backtest:
   # Diabaikan selama server_timezone di atas terisi.
   server_utc_offset_hours: 3.0
   tp_fixed_distance_overrides:
-    XAUUSD: 4.34
-    NAS100: 40.38
-    US30: 43.25
-    SP500: 4.64
+    XAUUSD: 2.36
+    NAS100: 12.75
+    US30: 20.0
+    SP500: 2.62
 symbols:
   aliases:
     XAUUSD:
