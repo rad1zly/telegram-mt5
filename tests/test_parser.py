@@ -425,7 +425,14 @@ def test_followup_place_sl_at_arbitrary_price_is_not_move_sl_be():
     text = "GOLD - Live Update\n\nHit Target +120 pip\n\nplace your sl around 3758"
     followup = parse_followup_regex(text, message_id=1033, reply_to_msg_id=None)
     assert followup is not None
-    assert followup.kinds == []
+    # Inti test ini: harga SL sembarang (bukan entry) TIDAK boleh memicu
+    # move_sl_be -- kita tidak bisa aman menaruh SL di angka acak.
+    assert "move_sl_be" not in followup.kinds
+    assert "partial_close_tp1" not in followup.kinds
+    assert "close_all" not in followup.kinds
+    # "Hit Target +120 pip" sendiri sekarang dikenali sbg pengumuman hasil
+    # (target_reached) -- aksinya diputuskan config, lihat followup.py.
+    assert followup.kinds == ["target_reached"]
 
 
 def test_followup_closed_the_position_past_tense_triggers_close_all():

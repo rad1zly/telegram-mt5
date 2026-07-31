@@ -95,6 +95,27 @@ SECURE_PROFIT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Pengumuman bahwa TARGET channel sudah tercapai -- "Hit Target +220 Pip",
+# "Second Target Hit +350 Pip", "reached our first target at 4095",
+# "Reached 4035 level around 70 Pip in Profit". Ini bukan basa-basi: ini
+# pemberitahuan hasil yang, bagi pengikut channel, berarti untungnya sudah
+# ada di meja. Lihat alasan lengkap di classify_followup_kinds.
+TARGET_REACHED_RE = re.compile(
+    r"\bhit\s+(?:the\s+|our\s+)?(?:first|second|third|final|1st|2nd|3rd)?\s*(?:target|profit)\b"
+    r"|\b(?:first|second|third|final|1st|2nd|3rd)\s+target\s+hit\b"
+    r"|\breached\s+(?:our|the)\s+(?:first|second|third|final)?\s*target\b"
+    r"|\+\s*\d+(?:\.\d+)?\s*pips?\b[^.\n]{0,30}\bprofit\b"
+    r"|\bin\s+profit\b",
+    re.IGNORECASE,
+)
+
+# Penjaga: jangan sampai pengumuman "Hit Stop Loss" ikut terbaca sebagai
+# target tercapai (dua-duanya memakai kata "hit").
+HIT_SL_RE = re.compile(
+    r"\bhit\s+(?:the\s+)?(?:stop[\s-]?loss|sl)\b|\bstop[\s-]?loss\s+(?:was\s+)?hit\b",
+    re.IGNORECASE,
+)
+
 CLOSE_ALL_RE = re.compile(
     rf"\bclos(?:e|ing)\s+(?:{_CLOSE_FILLER})?(?:all|fully|full\s+position)\b"
     # "close the position/this trade/it" TANPA embel-embel apa pun juga
@@ -175,6 +196,23 @@ def classify_followup_kinds(text: str) -> list[str]:
         kinds.append("close_all")
     elif partial_matched or SECURE_PROFIT_RE.search(text):
         kinds.append("partial_close_tp1")
+
+    # Pengumuman "Hit Target / Second Target Hit / +X pip in profit" TANPA
+    # kata kerja close apa pun. Dulu ini diabaikan total karena dianggap
+    # cuma penanda kemajuan, bukan instruksi -- dan itu ternyata membuang
+    # 576 pesan (24.5% dari SELURUH follow-up yang terkait sinyal).
+    #
+    # Dibaca ulang dari korpus, ini memang PEMBERITAHUAN HASIL: channel
+    # mengumumkan target yang MEREKA maksud sudah tercapai. Buat pengikut
+    # channel, itulah momen ambil untungnya -- menahan terus setelah itu
+    # berarti mengembalikan profit yang channel sendiri sudah nyatakan
+    # tercapai.
+    #
+    # Dipisah sebagai kind TERSENDIRI (bukan langsung close_all) supaya
+    # bisa dinyalakan/dimatikan dan diukur dampaknya terpisah, tanpa
+    # mencampuri instruksi close yang memang eksplisit.
+    if not kinds and TARGET_REACHED_RE.search(text) and not HIT_SL_RE.search(text):
+        kinds.append("target_reached")
 
     return kinds
 

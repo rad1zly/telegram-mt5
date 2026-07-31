@@ -219,7 +219,10 @@ def run(
                     target_trade.exit_reason = "partial_close_full"
                 target_trade.tp1_hit = True
 
-        if "close_all" in kinds and target_trade.is_open and config.close_all_enabled:
+        wants_close = ("close_all" in kinds and config.close_all_enabled) or (
+            "target_reached" in kinds and config.close_on_target_reached
+        )
+        if wants_close and target_trade.is_open:
             idx = series.index_at_or_after(event_time)
             approx_price = _close_price(series, idx, target_trade.direction) if idx is not None else target_trade.entry_price
             target_trade.realized_pnl_usd += pnl_usd(target_trade, approx_price, target_trade.remaining_lot, spec)

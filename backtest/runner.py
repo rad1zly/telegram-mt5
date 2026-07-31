@@ -50,6 +50,11 @@ class BacktestConfig:
                                             # semua strategi TP yang sudah dicoba. Prioritas: tp_r_multiple >
                                             # tp_fixed_distance_overrides (kalau simbolnya ada) > tp_index (TP
                                             # channel apa adanya).
+    close_on_target_reached: bool = False  # kalau True, pengumuman "Hit Target/+X pip in
+                                            # profit" dari channel diperlakukan sbg instruksi
+                                            # TUTUP POSISI. Inti tesis "ikut channel apa adanya":
+                                            # begitu channel menyatakan targetnya tercapai, itulah
+                                            # momen ambil untung. Lihat followup.TARGET_REACHED_RE.
     auto_be_r_multiple: Optional[float] = None  # kalau diisi (mis. 1.0), SL otomatis pindah ke
                                                   # breakeven begitu harga +N*R -- mekanis, TIDAK
                                                   # bergantung follow-up message channel sama sekali.
@@ -319,7 +324,10 @@ def run(
                     target_trade.exit_reason = "partial_close_full"
                 target_trade.tp1_hit = True
 
-        if "close_all" in kinds and target_trade.is_open and config.close_all_enabled:
+        wants_close = ("close_all" in kinds and config.close_all_enabled) or (
+            "target_reached" in kinds and config.close_on_target_reached
+        )
+        if wants_close and target_trade.is_open:
             idx = series.index_at_or_after(event_time)
             approx_price = series.candles[idx].open if idx is not None else target_trade.entry_price
             target_trade.realized_pnl_usd += pnl_usd(target_trade, approx_price, target_trade.remaining_lot, spec)
