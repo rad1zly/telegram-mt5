@@ -29,12 +29,12 @@ SETTINGS_PATH = "config/settings.yaml"
 
 
 def load_settings():
-    with open(SETTINGS_PATH) as f:
+    with open(SETTINGS_PATH, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
 def save_settings(settings):
-    with open(SETTINGS_PATH, "w") as f:
+    with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
         yaml.safe_dump(settings, f, sort_keys=False, allow_unicode=True)
 
 

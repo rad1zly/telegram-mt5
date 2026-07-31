@@ -85,7 +85,7 @@ def main():
         "US30": args.us30_ticks, "SP500": args.sp500_ticks,
     }
 
-    with open("config/settings.yaml") as f:
+    with open("config/settings.yaml", encoding="utf-8") as f:
         settings = yaml.safe_load(f)
 
     clock = ServerClock.from_config(settings.get("backtest"))

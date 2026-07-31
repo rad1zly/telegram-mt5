@@ -58,7 +58,7 @@ class PriceSeries:
 
             clock = ServerClock(fixed_offset_hours=server_utc_offset_hours)
         candles = []
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             header = f.readline()
             delimiter = "\t" if "\t" in header else ","
             for line in f:

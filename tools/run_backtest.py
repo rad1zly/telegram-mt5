@@ -38,7 +38,7 @@ PRICE_FILES = {
 
 
 def load_symbol_specs():
-    with open(os.path.join(DATA_DIR, "symbol_info.yaml")) as f:
+    with open(os.path.join(DATA_DIR, "symbol_info.yaml"), encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     by_broker_symbol = {item["symbol"]: item for item in raw}
 
@@ -96,7 +96,7 @@ def parse_args():
 def main():
     args = parse_args()
 
-    with open("config/settings.yaml") as f:
+    with open("config/settings.yaml", encoding="utf-8") as f:
         settings = yaml.safe_load(f)
 
     clock = ServerClock.from_config(settings.get("backtest"))

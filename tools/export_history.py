@@ -93,7 +93,7 @@ def main():
         if info:
             info_snapshot.append(info)
 
-    with open(os.path.join(OUTPUT_DIR, "symbol_info.yaml"), "w") as f:
+    with open(os.path.join(OUTPUT_DIR, "symbol_info.yaml"), "w", encoding="utf-8") as f:
         yaml.safe_dump(info_snapshot, f, sort_keys=False)
 
     print(f"\nSelesai. Semua file ada di folder: {OUTPUT_DIR}/")

@@ -60,7 +60,7 @@ def main():
     client = OpenAI(api_key=api_key, base_url=MINIMAX_BASE_URL, max_retries=10, timeout=60.0)
 
     rows = []
-    with open(CORPUS_PATH) as f:
+    with open(CORPUS_PATH, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -69,7 +69,7 @@ def main():
     os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
     already_done = set()
     if os.path.exists(CACHE_PATH):
-        with open(CACHE_PATH) as f:
+        with open(CACHE_PATH, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:
@@ -82,7 +82,7 @@ def main():
         return
 
     lock = threading.Lock()
-    cache_file = open(CACHE_PATH, "a")
+    cache_file = open(CACHE_PATH, "a", encoding="utf-8")
     count = 0
     start = time.time()
 

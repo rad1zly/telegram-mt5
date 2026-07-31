@@ -37,7 +37,7 @@ SAMPLE_SIGNALS = {
 
 
 def load_settings():
-    with open("config/settings.yaml") as f:
+    with open("config/settings.yaml", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 

@@ -70,7 +70,7 @@ def load_signal_rows(path: str, since: Optional[str] = None, until: Optional[str
     sinyal SEBELUM since ikut terpotong (parent-nya tidak ada di rows) --
     follow-up begitu akan gagal resolve dan skip, bukan salah dihitung."""
     rows = []
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:

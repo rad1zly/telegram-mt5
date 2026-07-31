@@ -143,7 +143,7 @@ def make_config(settings, **overrides):
 
 def main():
     args = parse_args()
-    with open("config/settings.yaml") as f:
+    with open("config/settings.yaml", encoding="utf-8") as f:
         settings = yaml.safe_load(f)
 
     clock = ServerClock.from_config(settings.get("backtest"))

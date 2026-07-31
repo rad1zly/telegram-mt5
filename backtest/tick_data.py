@@ -73,7 +73,7 @@ class TickSeries:
     def from_csv(cls, path: str, server_utc_offset_hours: float = 0.0, clock=None) -> "TickSeries":
         import pandas as pd
 
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             header = f.readline()
         delimiter = "\t" if "\t" in header else ","
 

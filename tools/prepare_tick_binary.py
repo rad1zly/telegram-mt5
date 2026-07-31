@@ -28,7 +28,7 @@ CHUNK_SIZE = 5_000_000  # baris per chunk -- sekitar 150-200MB RAM per chunk, am
 
 
 def convert(csv_path: str, out_prefix: str, chunk_size: int = CHUNK_SIZE) -> int:
-    with open(csv_path) as f:
+    with open(csv_path, encoding="utf-8") as f:
         header = f.readline()
     delimiter = "\t" if "\t" in header else ","
 

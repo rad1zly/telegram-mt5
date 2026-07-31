@@ -15,7 +15,7 @@ def load_llm_cache(path: str) -> dict:
     dobel (mis. hasil resume job yang sempat diulang) -- yang PALING AKHIR
     di file menang (overwrite), konsisten dgn semantik "cache terbaru"."""
     cache: dict = {}
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:

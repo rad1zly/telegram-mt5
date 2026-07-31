@@ -31,7 +31,7 @@ def load_rows() -> list[dict]:
     if not os.path.exists(FIXTURE_PATH):
         raise SystemExit(f"{FIXTURE_PATH} tidak ada. Jalankan tools/dump_history.py atau collect_signals.py dulu.")
     rows = []
-    with open(FIXTURE_PATH) as f:
+    with open(FIXTURE_PATH, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -87,7 +87,7 @@ def main():
         print(f"  {kind}: {count}")
     print()
 
-    with open(UNRECOGNIZED_PATH, "w") as f:
+    with open(UNRECOGNIZED_PATH, "w", encoding="utf-8") as f:
         for row in unrecognized:
             f.write(json.dumps(row, default=str) + "\n")
     print(f"{len(unrecognized)} pesan tidak dikenali disimpan ke {UNRECOGNIZED_PATH} untuk direview manual.")

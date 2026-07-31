@@ -39,13 +39,13 @@ EDITS_FIXTURE_PATH = "tests/fixtures/edits.jsonl"
 
 
 def load_config():
-    with open("config/settings.yaml") as f:
+    with open("config/settings.yaml", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
 def append_fixture(row: dict, path: str = FIXTURE_PATH) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a") as f:
+    with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(row, default=str) + "\n")
 
 

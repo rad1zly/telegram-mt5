@@ -104,7 +104,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    with open("config/settings.yaml") as f:
+    with open("config/settings.yaml", encoding="utf-8") as f:
         settings = yaml.safe_load(f)
 
     resolver = SymbolResolver(
@@ -122,7 +122,7 @@ def main():
             continue
         series[canonical] = PriceSeries.from_csv(path, clock=clock)
 
-    with open(SIGNALS_PATH) as f:
+    with open(SIGNALS_PATH, encoding="utf-8") as f:
         rows = [json.loads(line) for line in f]
     rows_by_id = {r["message_id"]: r for r in rows}
 

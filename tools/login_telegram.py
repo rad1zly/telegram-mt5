@@ -19,7 +19,7 @@ load_dotenv(dotenv_path="config/.env")
 
 
 def load_config():
-    with open("config/settings.yaml") as f:
+    with open("config/settings.yaml", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 

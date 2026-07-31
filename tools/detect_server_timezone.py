@@ -43,7 +43,7 @@ BROKER_SYMBOLS = ["XAUUSD+", "NAS100.r", "DJ30.r", "SP500.r"]
 def collect_samples(series, resolver):
     """[(canonical, waktu_pesan_utc, harga_yang_disebut_channel)]"""
     samples = []
-    with open(SIGNALS_PATH) as f:
+    with open(SIGNALS_PATH, encoding="utf-8") as f:
         for line in f:
             row = json.loads(line)
             text = row["text"] or ""
@@ -126,7 +126,7 @@ def monthly_best_offsets(series, samples):
 
 
 def main():
-    with open("config/settings.yaml") as f:
+    with open("config/settings.yaml", encoding="utf-8") as f:
         settings = yaml.safe_load(f)
     resolver = SymbolResolver(
         settings["symbols"]["aliases"],
