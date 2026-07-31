@@ -16,9 +16,19 @@ risk:
   usd_per_trade: 30.0
   max_lot_cap: 5.0
   max_trades_per_day: 20
+  # AKTIF sejak audit: kalau rugi TEREALISASI hari ini (UTC) menembus angka
+  # ini, entry BARU ditolak sampai pergantian hari. Posisi yang sedang jalan
+  # TIDAK disentuh. Angkanya positif; dibandingkan terhadap P/L negatif.
+  # Sumbernya riwayat deal broker (sudah termasuk swap & komisi), difilter
+  # magic number bot -- trading manual di akun sama tidak ikut terhitung.
+  # Kalau riwayat tidak bisa diambil, guard MELEWATKAN (fail-open) supaya
+  # koneksi bermasalah tidak memblokir trading selamanya.
   daily_loss_cap_usd: 200.0
 guards:
   max_price_deviation_pips: 15
+  # BELUM AKTIF: tidak ada kode yang membaca ini. Dibiarkan sebagai
+  # penanda rencana (plan Fase 3), JANGAN dikira sudah melindungi dari
+  # spread lebar saat news.
   max_spread_pips: 30
   price_deviation_overrides:
     XAUUSD: 100

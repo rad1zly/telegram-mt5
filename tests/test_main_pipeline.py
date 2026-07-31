@@ -501,3 +501,108 @@ def test_close_all_stays_notify_only_when_disabled_in_config(tmp_path, monkeypat
     assert close_calls == []  # TIDAK dieksekusi karena close_all off
     assert any("TIDAK dieksekusi otomatis" in n for n in notified)
     assert ctx.db.get_open_position_by_symbol("GOLD") is not None  # masih open
+
+
+class TestDailyLossCap:
+    """risk.daily_loss_cap_usd sempat ADA di config tapi TIDAK dibaca kode
+    mana pun -- config mati yang memberi rasa aman palsu. Test ini mengunci
+    perilakunya sekarang setelah diimplementasikan."""
+
+    def test_entry_blocked_when_daily_loss_cap_breached(self, tmp_path, monkeypatch):
+        ctx = _make_ctx(tmp_path, risk={"daily_loss_cap_usd": 200.0})
+        notified = []
+        monkeypatch.setattr(notifier, "send", lambda text: notified.append(text))
+        monkeypatch.setattr(mt5_client, "get_symbol_info", lambda s: _fake_symbol_info())
+        # rugi hari ini -250 (melewati cap 200)
+        monkeypatch.setattr(mt5_client, "get_realized_pnl_since", lambda since: -250.0)
+
+        execute_calls = []
+        monkeypatch.setattr(main_mod, "execute_signal", lambda **kw: execute_calls.append(1))
+
+        asyncio.run(main_mod.handle_new_message(ctx, "chan", _fake_msg(60, GOLD_ENTRY_TEXT)))
+
+        assert execute_calls == []
+        assert any("daily_loss_cap" in n for n in notified)
+
+    def test_entry_allowed_when_loss_still_under_cap(self, tmp_path, monkeypatch):
+        ctx = _make_ctx(tmp_path, risk={"daily_loss_cap_usd": 200.0})
+        monkeypatch.setattr(notifier, "send", lambda text: None)
+        monkeypatch.setattr(mt5_client, "get_symbol_info", lambda s: _fake_symbol_info())
+        monkeypatch.setattr(mt5_client, "get_realized_pnl_since", lambda since: -150.0)
+        monkeypatch.setattr(
+            main_mod, "execute_signal",
+            lambda **kw: ExecutionResult(success=True, detail="ok", ticket=61, lot=0.1, price=4344.5),
+        )
+
+        asyncio.run(main_mod.handle_new_message(ctx, "chan", _fake_msg(61, GOLD_ENTRY_TEXT)))
+
+        assert ctx.db.get_open_position_by_symbol("GOLD") is not None
+
+    def test_profit_never_triggers_cap(self, tmp_path, monkeypatch):
+        # cap dibandingkan terhadap RUGI; P/L positif sebesar apa pun
+        # tidak boleh memblokir entry.
+        ctx = _make_ctx(tmp_path, risk={"daily_loss_cap_usd": 200.0})
+        monkeypatch.setattr(notifier, "send", lambda text: None)
+        monkeypatch.setattr(mt5_client, "get_symbol_info", lambda s: _fake_symbol_info())
+        monkeypatch.setattr(mt5_client, "get_realized_pnl_since", lambda since: 5000.0)
+        monkeypatch.setattr(
+            main_mod, "execute_signal",
+            lambda **kw: ExecutionResult(success=True, detail="ok", ticket=62, lot=0.1, price=4344.5),
+        )
+
+        asyncio.run(main_mod.handle_new_message(ctx, "chan", _fake_msg(62, GOLD_ENTRY_TEXT)))
+
+        assert ctx.db.get_open_position_by_symbol("GOLD") is not None
+
+    def test_guard_fails_open_when_broker_history_unavailable(self, tmp_path, monkeypatch):
+        # Riwayat tidak bisa diambil (None) -> JANGAN blokir selamanya.
+        # Diblokir terus gara-gara koneksi bermasalah sama buruknya.
+        ctx = _make_ctx(tmp_path, risk={"daily_loss_cap_usd": 200.0})
+        monkeypatch.setattr(notifier, "send", lambda text: None)
+        monkeypatch.setattr(mt5_client, "get_symbol_info", lambda s: _fake_symbol_info())
+        monkeypatch.setattr(mt5_client, "get_realized_pnl_since", lambda since: None)
+        monkeypatch.setattr(
+            main_mod, "execute_signal",
+            lambda **kw: ExecutionResult(success=True, detail="ok", ticket=63, lot=0.1, price=4344.5),
+        )
+
+        asyncio.run(main_mod.handle_new_message(ctx, "chan", _fake_msg(63, GOLD_ENTRY_TEXT)))
+
+        assert ctx.db.get_open_position_by_symbol("GOLD") is not None
+
+    def test_cap_absent_from_config_means_guard_inactive(self, tmp_path, monkeypatch):
+        ctx = _make_ctx(tmp_path)  # tanpa daily_loss_cap_usd
+        monkeypatch.setattr(notifier, "send", lambda text: None)
+        monkeypatch.setattr(mt5_client, "get_symbol_info", lambda s: _fake_symbol_info())
+
+        called = []
+        monkeypatch.setattr(mt5_client, "get_realized_pnl_since",
+                            lambda since: called.append(1) or -9999.0)
+        monkeypatch.setattr(
+            main_mod, "execute_signal",
+            lambda **kw: ExecutionResult(success=True, detail="ok", ticket=64, lot=0.1, price=4344.5),
+        )
+
+        asyncio.run(main_mod.handle_new_message(ctx, "chan", _fake_msg(64, GOLD_ENTRY_TEXT)))
+
+        assert called == []  # tidak usah tanya broker kalau guard-nya mati
+        assert ctx.db.get_open_position_by_symbol("GOLD") is not None
+
+
+def test_processing_error_notifies_user_instead_of_silently_losing_signal(tmp_path, monkeypatch):
+    """Pesan dicatat ke DB (dedup) SEBELUM diproses, jadi error saat proses
+    = sinyal hilang permanen. Harus sampai ke user, bukan cuma ke log."""
+    ctx = _make_ctx(tmp_path)
+    notified = []
+    monkeypatch.setattr(notifier, "send", lambda text: notified.append(text))
+
+    def boom(*a, **kw):
+        raise RuntimeError("MT5 disconnected")
+
+    monkeypatch.setattr(main_mod, "parse_entry_signal", boom)
+
+    # tidak boleh melempar keluar -- listener harus tetap hidup
+    asyncio.run(main_mod.handle_new_message(ctx, "chan", _fake_msg(70, GOLD_ENTRY_TEXT)))
+
+    assert any("ERROR memproses pesan #70" in n for n in notified)
+    assert any("MT5 disconnected" in n for n in notified)

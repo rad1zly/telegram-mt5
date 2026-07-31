@@ -20,17 +20,23 @@ pesan lama untuk menambah update, bukan cuma kirim pesan baru):
      lalu fallback MiniMax). Sebelum menerapkan aksi, posisi yang match
      di-verifikasi ULANG ke broker (bukan cuma percaya status 'open' di
      DB lokal — bisa stale kalau sudah kena TP/SL). Kalau ada kinds yang
-     cocok (move_sl_be / partial_close_tp1) DAN diaktifkan di config,
-     diterapkan; partial close dibulatkan ke volume_step broker (bukan
-     dibulatkan generik), dan kalau sisanya di bawah volume_min, tutup
-     penuh saja. close_all tidak pernah dieksekusi otomatis, cuma
-     notifikasi (lihat plan).
+     cocok (move_sl_be / partial_close_tp1 / close_all) DAN diaktifkan di
+     config, diterapkan; partial close dibulatkan ke volume_step broker
+     (bukan dibulatkan generik), dan kalau sisanya di bawah volume_min,
+     tutup penuh saja.
   4. Bukan keduanya -> diabaikan (banyak chatter non-signal di channel).
+
+PERHATIAN soal close_all: SEKARANG DIEKSEKUSI OTOMATIS (followup.close_all
+= true di config) — channel memang sering memberi instruksi tutup posisi
+yang eksplisit, bukan cuma saran ambigu. Set ke false kalau mau kembali
+ke perilaku "cuma notifikasi".
 
 Guard yang AKTIF: dedup, SL wajib ada, simbol harus ke-resolve jelas, lot
 harus lolos volume_min, max_trades_per_day, posisi diverifikasi ulang ke
-broker sebelum follow-up diterapkan. Guard yang BELUM ada (spread,
-daily_loss_cap) — lihat plan Fase 3/4, menyusul.
+broker sebelum follow-up diterapkan, dan daily_loss_cap_usd.
+
+Guard yang MASIH BELUM ada: filter spread (guards.max_spread_pips ada di
+config tapi BELUM dibaca kode mana pun — jangan dikira aktif).
 """
 
 import asyncio
@@ -39,6 +45,7 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -105,7 +112,45 @@ class Context:
         self.broker_symbols = broker_symbols
 
 
+async def _daily_loss_cap_breached(ctx: Context, loop) -> Optional[float]:
+    """Rugi terealisasi hari ini kalau SUDAH menembus risk.daily_loss_cap_usd,
+    None kalau belum/tidak berlaku.
+
+    Sengaja pakai riwayat deal BROKER, bukan DB lokal: DB kita tidak
+    menyimpan P/L sama sekali, dan posisi bisa kena TP/SL atau ditutup
+    manual tanpa bot tahu. Kalau riwayat tidak bisa diambil, guard ini
+    TIDAK memblokir (fail-open) -- diblokir terus-menerus gara-gara
+    koneksi bermasalah juga bukan perilaku yang benar; kejadiannya
+    di-log supaya tetap kelihatan."""
+    cap = (ctx.settings.get("risk") or {}).get("daily_loss_cap_usd")
+    if not cap or cap <= 0:
+        return None
+
+    realized = await loop.run_in_executor(
+        None, mt5_client.get_realized_pnl_since, today_start()
+    )
+    if realized is None:
+        log.warning("Tidak bisa ambil riwayat deal — daily_loss_cap dilewati untuk pesan ini")
+        return None
+    # cap disimpan sebagai angka POSITIF di config; rugi = P/L negatif
+    if realized <= -abs(cap):
+        return realized
+    return None
+
+
 async def handle_entry_signal(ctx: Context, signal, msg) -> None:
+    loop = asyncio.get_event_loop()
+
+    breached = await _daily_loss_cap_breached(ctx, loop)
+    if breached is not None:
+        cap = ctx.settings["risk"]["daily_loss_cap_usd"]
+        notifier.send(
+            f"🛑 Signal #{msg.id} ({signal.symbol}) DILEWATI — rugi hari ini "
+            f"${breached:,.2f} sudah menembus daily_loss_cap_usd (${cap:,.2f}). "
+            f"Tidak ada entry baru sampai pergantian hari (UTC)."
+        )
+        return
+
     max_per_day = ctx.settings["risk"]["max_trades_per_day"]
     opened_today = ctx.db.count_positions_opened_since(today_start_iso())
     if opened_today >= max_per_day:
@@ -115,7 +160,6 @@ async def handle_entry_signal(ctx: Context, signal, msg) -> None:
         )
         return
 
-    loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
         None,
         lambda: execute_signal(
@@ -346,12 +390,35 @@ def _message_row(channel_label: str, msg) -> dict:
     }
 
 
+async def _safely_classify_and_act(ctx: Context, text: str, msg) -> None:
+    """Pesan sudah TERLANJUR tercatat di DB (untuk dedup) SEBELUM diproses,
+    jadi kalau pemrosesan meledak, pesan itu dianggap 'sudah dilihat' dan
+    TIDAK akan pernah dicoba lagi. Tanpa penjagaan ini, satu error sesaat
+    (API LLM timeout, MT5 disconnect) = sinyal hilang DIAM-DIAM: bot tetap
+    hidup, log-nya lewat begitu saja, dan user tidak tahu ada yang terlewat.
+
+    Karena itu error apa pun di sini WAJIB sampai ke user lewat notifikasi,
+    bukan cuma masuk log. Sengaja menangkap Exception luas: apa pun yang
+    salah, kehilangan sinyal secara senyap lebih berbahaya daripada
+    kebisingan notifikasi."""
+    try:
+        await classify_and_act(ctx, text, msg)
+    except Exception as e:
+        log.exception("Gagal memproses pesan #%s", msg.id)
+        preview = (text or "")[:300].replace("\n", " | ")
+        notifier.send(
+            f"🔥 ERROR memproses pesan #{msg.id}: {type(e).__name__}: {e}\n"
+            f"Pesan ini TIDAK akan dicoba ulang otomatis (sudah tercatat di DB).\n"
+            f"Teks: {preview}"
+        )
+
+
 async def handle_new_message(ctx: Context, channel_label: str, msg) -> None:
     text = msg.raw_text or ""
     if not ctx.db.insert_message(_message_row(channel_label, msg)):
         log.debug("Pesan duplikat #%s diabaikan", msg.id)
         return
-    await classify_and_act(ctx, text, msg)
+    await _safely_classify_and_act(ctx, text, msg)
 
 
 async def handle_edited_message(ctx: Context, channel_label: str, msg) -> None:
@@ -411,7 +478,7 @@ async def handle_edited_message(ctx: Context, channel_label: str, msg) -> None:
         )
         return
 
-    await classify_and_act(ctx, text, msg)
+    await _safely_classify_and_act(ctx, text, msg)
 
 
 async def main():

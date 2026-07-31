@@ -12,6 +12,7 @@ dengan loop.run_in_executor.
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 log = logging.getLogger(__name__)
@@ -67,6 +68,36 @@ def get_symbol_info(symbol: str):
 
 def get_all_symbol_names() -> list[str]:
     return [s.name for s in _mt5().symbols_get()]
+
+
+def get_realized_pnl_since(since: datetime) -> Optional[float]:
+    """Total P/L SUDAH TEREALISASI sejak `since`, langsung dari riwayat
+    deal broker — bukan dihitung ulang dari DB lokal.
+
+    Kenapa dari broker: angka broker sudah termasuk swap dan komisi, dan
+    tetap benar walau posisi ditutup manual di terminal atau kena TP/SL
+    tanpa bot tahu. DB lokal kita tidak menyimpan P/L sama sekali, jadi
+    tidak bisa jadi sumber untuk guard yang menyangkut uang.
+
+    Return None kalau riwayat tidak bisa diambil (belum connect, dsb) --
+    pemanggil HARUS memperlakukan None sebagai 'tidak tahu', bukan 'nol',
+    supaya guard tidak diam-diam mati saat koneksi bermasalah.
+
+    Hanya menghitung deal milik bot ini (MAGIC_NUMBER), supaya trading
+    manual di akun yang sama tidak ikut memicu/menghapus batas harian."""
+    mt5 = _mt5()
+    deals = mt5.history_deals_get(since, datetime.now(timezone.utc))
+    if deals is None:
+        log.error("history_deals_get gagal: %s", mt5.last_error())
+        return None
+    total = 0.0
+    for deal in deals:
+        if getattr(deal, "magic", None) != MAGIC_NUMBER:
+            continue
+        total += getattr(deal, "profit", 0.0) or 0.0
+        total += getattr(deal, "swap", 0.0) or 0.0
+        total += getattr(deal, "commission", 0.0) or 0.0
+    return total
 
 
 def get_position(ticket: int):
@@ -253,9 +284,20 @@ def partial_close(ticket: int, symbol: str, volume: float) -> OrderResult:
     position = positions[0]
 
     close_direction_is_buy = position.type == mt5.ORDER_TYPE_SELL  # tutup SELL = order BUY, dan sebaliknya
+
+    # Dua sumber ini BISA mengembalikan None (feed putus, simbol hilang dari
+    # Market Watch). send_order sudah menjaganya sejak awal; di sini dulu
+    # tidak, jadi kegagalan feed berujung AttributeError yang membatalkan
+    # seluruh penanganan follow-up -- padahal ini jalur MENUTUP posisi
+    # (termasuk close_all), yang justru paling tidak boleh gagal diam-diam.
     tick = mt5.symbol_info_tick(symbol)
-    price = tick.ask if close_direction_is_buy else tick.bid
+    if tick is None:
+        return OrderResult(success=False, error=f"Tidak bisa ambil tick untuk {symbol} — close dibatalkan")
     info = get_symbol_info(symbol)
+    if info is None:
+        return OrderResult(success=False, error=f"symbol_info kosong untuk {symbol} — close dibatalkan")
+
+    price = tick.ask if close_direction_is_buy else tick.bid
 
     request = {
         "action": mt5.TRADE_ACTION_DEAL,

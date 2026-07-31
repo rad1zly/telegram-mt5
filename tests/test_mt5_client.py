@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, ".")
 
+from src.trading import mt5_client  # noqa: E402
 from src.trading.mt5_client import (  # noqa: E402
     compute_market_tolerance,
     decide_order_kind,
@@ -78,3 +79,82 @@ def test_scenario_call_1_point_below_becomes_market_with_wider_config():
     tolerance = compute_market_tolerance(info, max_deviation_pips=100.0)
     kind = decide_order_kind("BUY", entry=4020.0, current_price=4019.0, tolerance=tolerance)
     assert kind == "MARKET"
+
+
+# --- partial_close: sumber data broker bisa None ---
+# send_order sudah menjaga symbol_info_tick/symbol_info yang None sejak
+# awal, tapi partial_close dulu tidak -- feed putus di jalur MENUTUP
+# posisi (termasuk close_all) berujung AttributeError yang membatalkan
+# seluruh penanganan follow-up. Justru jalur ini yang paling tidak boleh
+# gagal diam-diam.
+
+class _FakePosition:
+    type = 1  # ORDER_TYPE_SELL
+
+
+class _FakeMT5:
+    ORDER_TYPE_BUY = 0
+    ORDER_TYPE_SELL = 1
+    TRADE_ACTION_DEAL = 1
+    ORDER_TIME_GTC = 0
+    TRADE_RETCODE_DONE = 10009
+    ORDER_FILLING_IOC = 2
+
+    def __init__(self, tick=None, info=None):
+        self._tick = tick
+        self._info = info
+        self.orders_sent = []
+
+    def positions_get(self, ticket=None):
+        return [_FakePosition()]
+
+    def symbol_info_tick(self, symbol):
+        return self._tick
+
+    def symbol_info(self, symbol):
+        return self._info
+
+    def order_send(self, request):
+        self.orders_sent.append(request)
+        return SimpleNamespace(retcode=self.TRADE_RETCODE_DONE, order=1, price=100.0)
+
+    def last_error(self):
+        return "fake error"
+
+
+def test_partial_close_fails_gracefully_when_tick_unavailable(monkeypatch):
+    fake = _FakeMT5(tick=None, info=SimpleNamespace(filling_mode=2, visible=True))
+    monkeypatch.setattr(mt5_client, "_mt5", lambda: fake)
+
+    result = mt5_client.partial_close(ticket=1, symbol="XAUUSD+", volume=0.1)
+
+    assert result.success is False
+    assert "tick" in result.error.lower()
+    assert fake.orders_sent == []  # tidak boleh terlanjur kirim order
+
+
+def test_partial_close_fails_gracefully_when_symbol_info_unavailable(monkeypatch):
+    fake = _FakeMT5(tick=SimpleNamespace(ask=100.5, bid=100.0), info=None)
+    monkeypatch.setattr(mt5_client, "_mt5", lambda: fake)
+
+    result = mt5_client.partial_close(ticket=1, symbol="XAUUSD+", volume=0.1)
+
+    assert result.success is False
+    assert "symbol_info" in result.error
+    assert fake.orders_sent == []
+
+
+def test_partial_close_succeeds_with_valid_broker_data(monkeypatch):
+    fake = _FakeMT5(
+        tick=SimpleNamespace(ask=100.5, bid=100.0),
+        info=SimpleNamespace(filling_mode=2, visible=True),
+    )
+    monkeypatch.setattr(mt5_client, "_mt5", lambda: fake)
+
+    result = mt5_client.partial_close(ticket=1, symbol="XAUUSD+", volume=0.1)
+
+    assert result.success is True
+    assert len(fake.orders_sent) == 1
+    # posisi SELL ditutup dengan BUY di harga ASK
+    assert fake.orders_sent[0]["type"] == fake.ORDER_TYPE_BUY
+    assert fake.orders_sent[0]["price"] == 100.5
